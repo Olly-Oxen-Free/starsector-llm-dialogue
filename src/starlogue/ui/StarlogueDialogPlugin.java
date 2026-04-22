@@ -8,12 +8,9 @@ import com.fs.starfarer.api.combat.EngagementResultAPI;
 import com.fs.starfarer.api.ui.CustomPanelAPI;
 import com.fs.starfarer.api.ui.TextFieldAPI;
 import com.fs.starfarer.api.ui.TooltipMakerAPI;
-import lunalib.lunaSettings.LunaSettings;
 import starlogue.engine.*;
 import starlogue.llm.*;
-import starlogue.personality.PersonalityComposer;
 import starlogue.api.StarlogueAPI;
-import starlogue.provider.FleetCaptainPlugin;
 import starlogue.provider.StarloguePlugin;
 import org.apache.log4j.Logger;
 import java.util.*;
@@ -67,10 +64,18 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
                 ? ctx.speakerName
                 : (ctx.person != null ? ctx.person.getNameString() : "the other side");
             text.addParagraph("Channel open. You are speaking with " + speaker + ".");
+
+            // Validate config before making the LLM call so misconfiguration is visible
+            // in-dialog instead of causing a silent dismiss.
+            String configError = validateConfig();
+            if (configError != null) {
+                reportError(configError);
+                return;
+            }
             sendToLLM("(Conversation starts. Greet the player briefly and in character. One or two sentences only.)");
-        } catch (Exception e) {
-            log.error("Starlogue: init failed — closing dialog", e);
-            failSafe();
+        } catch (Throwable e) {
+            log.error("Starlogue: init failed", e);
+            reportError("Starlogue failed to initialise: " + describe(e));
         }
     }
 
@@ -102,23 +107,29 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             waitTimer = 0f;
             try {
                 displayResponse(response);
-            } catch (Exception e) {
-                log.error("Starlogue: displayResponse failed — closing dialog", e);
-                failSafe();
+            } catch (Throwable e) {
+                log.error("Starlogue: displayResponse failed", e);
+                reportError("Failed to render LLM response: " + describe(e));
             }
             return;
         }
 
         Exception err = pendingError.getAndSet(null);
         if (err != null) {
-            log.error("Starlogue: LLM error — closing dialog", err);
-            failSafe();
+            log.error("Starlogue: LLM error", err);
+            state = State.IDLE;
+            waitTimer = 0f;
+            pendingUserMessage = null;
+            reportError("LLM call failed: " + describe(err));
             return;
         }
 
         if (waitTimer > 30f) {
-            log.warn("Starlogue: LLM timeout — closing dialog");
-            failSafe();
+            log.warn("Starlogue: LLM timeout");
+            state = State.IDLE;
+            waitTimer = 0f;
+            pendingUserMessage = null;
+            reportError("LLM call timed out after 30s. Check that your endpoint/model is reachable.");
         }
     }
 
@@ -174,10 +185,20 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     }
 
     private void sendToLLM(String userMessage) {
+        try {
+            sendToLLMImpl(userMessage);
+        } catch (Throwable e) {
+            log.error("Starlogue: sendToLLM failed synchronously", e);
+            reportError("Could not prepare LLM request: " + describe(e));
+        }
+    }
+
+    private void sendToLLMImpl(String userMessage) {
         state = State.WAITING;
         waitTimer = 0f;
         text.addParagraph("...");
         pendingUserMessage = userMessage;
+        showMainOptions(); // refresh so "Say something..." is disabled while we wait
 
         String systemPrompt = buildSystemPrompt();
 
@@ -301,10 +322,60 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private void showMainOptions() {
         options.clearOptions();
-        if (state != State.WAITING) {
-            options.addOption("Say something...", "starlogue_input");
-            options.addOption("End conversation", "starlogue_end");
+        options.addOption("Say something...", "starlogue_input");
+        options.addOption("End conversation", "starlogue_end");
+        if (state == State.WAITING) {
+            // Disable input while we're waiting on the LLM, but keep "End"
+            // available so the player can always bail out cleanly.
+            options.setEnabled("starlogue_input", false);
         }
+    }
+
+    /** Replace the last paragraph (usually "...") with an error message and hand control back to the player. */
+    private void reportError(String message) {
+        if (text != null) {
+            try {
+                text.replaceLastParagraph("[Starlogue error] " + message);
+            } catch (Throwable t) {
+                text.addParagraph("[Starlogue error] " + message);
+            }
+            text.addParagraph("You can try typing another prompt, or end the conversation.");
+        }
+        state = State.IDLE;
+        waitTimer = 0f;
+        showMainOptions();
+    }
+
+    /**
+     * Returns null when config looks usable, or a human-readable reason the LLM call
+     * cannot proceed. We only block on conditions that guarantee breakage (missing
+     * endpoint, missing API key when the provider is the remote Anthropic one).
+     * LunaLib being absent is fine — defaults will be used.
+     */
+    private String validateConfig() {
+        String provider = safeGetString("starlogue_provider", "openai_compatible");
+        String endpoint = safeGetString("starlogue_endpoint", "http://localhost:11434/v1");
+        String apiKey   = safeGetString("starlogue_api_key",  "");
+        String model    = safeGetString("starlogue_model",    "mistral");
+        if (endpoint == null || endpoint.isEmpty()) {
+            return "No LLM endpoint is configured. Open LunaLib settings and set 'starlogue_endpoint'.";
+        }
+        if (model == null || model.isEmpty()) {
+            return "No LLM model is configured. Open LunaLib settings and set 'starlogue_model'.";
+        }
+        if ("anthropic".equals(provider) && (apiKey == null || apiKey.isEmpty())) {
+            return "Anthropic provider selected but 'starlogue_api_key' is empty. "
+                + "Paste your Anthropic API key into LunaLib settings.";
+        }
+        return null;
+    }
+
+    private static String describe(Throwable t) {
+        if (t == null) return "unknown error";
+        String msg = t.getMessage();
+        String cls = t.getClass().getSimpleName();
+        if (msg == null || msg.isEmpty()) return cls;
+        return cls + ": " + msg;
     }
 
     /** Called on any unrecoverable error. Cleans up and exits to vanilla dialog flow. */
@@ -370,25 +441,66 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return sb.toString().trim();
     }
 
-    // ── LunaLib helper methods (null-safe) ────────────────────────────────
+    // ── LunaLib helper methods (null-safe, NoClassDefFoundError-safe) ─────
+    //
+    // LunaLib is a soft dependency. If the user hasn't installed it the
+    // `lunalib.lunaSettings.LunaSettings` class is absent at runtime and any
+    // direct reference would throw NoClassDefFoundError the first time the
+    // method is called. We resolve the class reflectively and cache whether
+    // it's available so callers always get their fallback values back instead
+    // of a silent crash.
+
+    private static Boolean LUNA_AVAILABLE = null;
+
+    private static boolean lunaLibAvailable() {
+        if (LUNA_AVAILABLE != null) return LUNA_AVAILABLE;
+        try {
+            Class.forName("lunalib.lunaSettings.LunaSettings",
+                false, StarlogueDialogPlugin.class.getClassLoader());
+            LUNA_AVAILABLE = Boolean.TRUE;
+        } catch (Throwable t) {
+            LUNA_AVAILABLE = Boolean.FALSE;
+        }
+        return LUNA_AVAILABLE;
+    }
 
     private static String safeGetString(String key, String fallback) {
-        String v = LunaSettings.getString("starlogue", key);
-        return (v != null && !v.isBlank()) ? v : fallback;
+        if (!lunaLibAvailable()) return fallback;
+        try {
+            String v = lunalib.lunaSettings.LunaSettings.getString("starlogue", key);
+            return (v != null && !v.isBlank()) ? v : fallback;
+        } catch (Throwable t) {
+            return fallback;
+        }
     }
 
     private static float safeGetFloat(String key, float fallback) {
-        Float v = LunaSettings.getFloat("starlogue", key);
-        return v != null ? v : fallback;
+        if (!lunaLibAvailable()) return fallback;
+        try {
+            Float v = lunalib.lunaSettings.LunaSettings.getFloat("starlogue", key);
+            return v != null ? v : fallback;
+        } catch (Throwable t) {
+            return fallback;
+        }
     }
 
     private static int safeGetInt(String key, int fallback) {
-        Integer v = LunaSettings.getInt("starlogue", key);
-        return v != null ? v : fallback;
+        if (!lunaLibAvailable()) return fallback;
+        try {
+            Integer v = lunalib.lunaSettings.LunaSettings.getInt("starlogue", key);
+            return v != null ? v : fallback;
+        } catch (Throwable t) {
+            return fallback;
+        }
     }
 
     private static boolean safeGetBoolean(String key, boolean fallback) {
-        Boolean v = LunaSettings.getBoolean("starlogue", key);
-        return v != null ? v : fallback;
+        if (!lunaLibAvailable()) return fallback;
+        try {
+            Boolean v = lunalib.lunaSettings.LunaSettings.getBoolean("starlogue", key);
+            return v != null ? v : fallback;
+        } catch (Throwable t) {
+            return fallback;
+        }
     }
 }
