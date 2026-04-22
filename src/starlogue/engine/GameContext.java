@@ -14,7 +14,8 @@ import java.util.Map;
 public class GameContext {
     // Identity
     public SectorEntityToken entity;
-    public PersonAPI person;
+    public PersonAPI person;             // may be null (e.g. bare derelict handled by SystemAIPlugin)
+    public String speakerName;           // always populated: real name, "Alpha Core", "Station AI", etc.
     public CampaignFleetAPI fleet;       // null for station NPCs
     public FactionAPI npcFaction;
     public FactionAPI playerFaction;
@@ -73,6 +74,9 @@ public class GameContext {
         Object v = extras.get(key);
         return v instanceof String ? (String) v : defaultVal;
     }
+
+    /** Returns the raw stored object for {@code key}, or null. */
+    public Object getObject(String key) { return extras.get(key); }
 
     public void addPersonalityNote(String note) { personalityNotes.add(note); }
 }

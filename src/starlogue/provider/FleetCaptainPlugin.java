@@ -33,6 +33,7 @@ public class FleetCaptainPlugin implements StarloguePlugin {
         GameContext ctx = new GameContext();
         ctx.entity = entity;
         ctx.person = commander;
+        ctx.speakerName = commander.getNameString();
         ctx.fleet = fleet;
         ctx.npcFaction = npcFaction;
         ctx.playerFaction = playerFaction;

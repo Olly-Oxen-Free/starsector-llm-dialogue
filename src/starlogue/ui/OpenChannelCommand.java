@@ -28,7 +28,7 @@ public class OpenChannelCommand extends BaseCommandPlugin {
             return false;
         }
 
-        StarlogueDialogPlugin plugin = new StarlogueDialogPlugin(target);
+        StarlogueDialogPlugin plugin = new StarlogueDialogPlugin(target, memoryMap);
         dialog.setPlugin(plugin);
         plugin.init(dialog);
         return true;

@@ -28,6 +28,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private TextPanelAPI text;
 
     private final SectorEntityToken target;
+    private final Map<String, MemoryAPI> memoryMap;
     private GameContext ctx;
     private EvaluatedActionSet actionSet;
     private final ConversationHistory history = new ConversationHistory();
@@ -40,7 +41,12 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private String pendingUserMessage = null;
 
     public StarlogueDialogPlugin(SectorEntityToken target) {
+        this(target, null);
+    }
+
+    public StarlogueDialogPlugin(SectorEntityToken target, Map<String, MemoryAPI> memoryMap) {
         this.target = target;
+        this.memoryMap = memoryMap;
     }
 
     // ── InteractionDialogPlugin ───────────────────────────────────────────
@@ -52,12 +58,15 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         this.text = dialog.getTextPanel();
 
         try {
-            ctx = ConstraintEngine.buildContext(target);
+            ctx = ConstraintEngine.buildContext(target, memoryMap);
             actionSet = ConstraintEngine.evaluate(target, ctx);
             ctx.evaluatedSet = actionSet;
             StarlogueAPI.setCurrentContext(ctx);
 
-            text.addParagraph("Channel open. You are speaking with " + ctx.person.getNameString() + ".");
+            String speaker = ctx.speakerName != null
+                ? ctx.speakerName
+                : (ctx.person != null ? ctx.person.getNameString() : "the other side");
+            text.addParagraph("Channel open. You are speaking with " + speaker + ".");
             sendToLLM("(Conversation starts. Greet the player briefly and in character. One or two sentences only.)");
         } catch (Exception e) {
             log.error("Starlogue: init failed — closing dialog", e);
@@ -221,8 +230,11 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private void displayResponse(LLMResponse response) {
         String content = response.content;
+        String speaker = ctx.speakerName != null
+            ? ctx.speakerName
+            : (ctx.person != null ? ctx.person.getNameString() : "???");
         if (content != null && !content.isBlank()) {
-            text.replaceLastParagraph(ctx.person.getNameString() + ": " + content);
+            text.replaceLastParagraph(speaker + ": " + content);
         } else {
             text.replaceLastParagraph(""); // tool-only response
         }
@@ -308,7 +320,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         StringBuilder sb = new StringBuilder();
 
         // Character block
-        StarloguePlugin plugin = ConstraintEngine.getPlugin(target);
+        StarloguePlugin plugin = ConstraintEngine.getPlugin(target, memoryMap);
         if (plugin != null) {
             sb.append(plugin.getSystemPromptPreamble(ctx));
         } else {
@@ -318,15 +330,23 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
         // Context block
         sb.append("SITUATION:\n");
-        sb.append("- Your name: ").append(ctx.person.getNameString()).append("\n");
+        String name = ctx.speakerName != null
+            ? ctx.speakerName
+            : (ctx.person != null ? ctx.person.getNameString() : "(automated)");
+        sb.append("- Your name: ").append(name).append("\n");
         if (ctx.npcFaction != null) {
             sb.append("- Your faction: ").append(ctx.npcFaction.getDisplayName()).append("\n");
         }
-        sb.append("- Fleet strength: ");
-        if (ctx.strengthDelta > 0.15f) sb.append("you outgun the player\n");
-        else if (ctx.strengthDelta < -0.15f) sb.append("player outguns you\n");
-        else sb.append("roughly equal forces\n");
-        sb.append("- Faction standing with player: ").append(ctx.repLevel).append("\n");
+        // Fleet-strength line only meaningful when a fleet is actually present.
+        if (ctx.fleet != null) {
+            sb.append("- Fleet strength: ");
+            if (ctx.strengthDelta > 0.15f) sb.append("you outgun the player\n");
+            else if (ctx.strengthDelta < -0.15f) sb.append("player outguns you\n");
+            else sb.append("roughly equal forces\n");
+        }
+        if (ctx.repLevel != null) {
+            sb.append("- Faction standing with player: ").append(ctx.repLevel).append("\n");
+        }
         if (ctx.memoryScore > 20f)
             sb.append("- You have positive history with this player\n");
         else if (ctx.memoryScore < -20f)

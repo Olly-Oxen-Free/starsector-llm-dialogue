@@ -1,13 +1,17 @@
 package starlogue.engine;
 
 import com.fs.starfarer.api.campaign.SectorEntityToken;
+import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import com.fs.starfarer.api.impl.campaign.ids.Personalities;
 import starlogue.action.StarlogueAction;
 import starlogue.api.ActionContributor;
 import starlogue.api.ContextModifier;
 import starlogue.api.StarlogueAPI;
 import starlogue.provider.FleetCaptainPlugin;
+import starlogue.provider.MarketAdminPlugin;
+import starlogue.provider.PersonInteractionPlugin;
 import starlogue.provider.StarloguePlugin;
+import starlogue.provider.SystemAIPlugin;
 import org.apache.log4j.Logger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -17,11 +21,15 @@ import java.util.Map;
 public class ConstraintEngine {
 
     private static final Logger log = Logger.getLogger(ConstraintEngine.class);
-    // Built-in plugins (lowest priority — external plugins registered via StarlogueAPI take precedence)
+    // Built-in plugins (lowest priority — external plugins registered via StarlogueAPI take precedence).
+    // Order matters: first match wins, so the richest context plugin is listed first.
     private static final List<StarloguePlugin> plugins = new ArrayList<StarloguePlugin>();
 
     static {
         plugins.add(new FleetCaptainPlugin());
+        plugins.add(new PersonInteractionPlugin());
+        plugins.add(new MarketAdminPlugin());
+        plugins.add(new SystemAIPlugin()); // always-true fallback
     }
 
     /** All plugins in priority order: external (registered first) then built-in. */
@@ -32,16 +40,24 @@ public class ConstraintEngine {
     }
 
     public static boolean canEngage(SectorEntityToken entity) {
+        return canEngage(entity, null);
+    }
+
+    public static boolean canEngage(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
         for (StarloguePlugin p : allPlugins()) {
-            if (p.canEngage(entity)) return true;
+            if (p.canEngage(entity, memoryMap)) return true;
         }
         return false;
     }
 
     public static GameContext buildContext(SectorEntityToken entity) {
+        return buildContext(entity, null);
+    }
+
+    public static GameContext buildContext(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
         GameContext ctx = null;
         for (StarloguePlugin p : allPlugins()) {
-            if (p.canEngage(entity)) { ctx = p.buildContext(entity); break; }
+            if (p.canEngage(entity, memoryMap)) { ctx = p.buildContext(entity, memoryMap); break; }
         }
         if (ctx == null) throw new IllegalStateException("No plugin can engage entity: " + entity);
 
@@ -58,8 +74,12 @@ public class ConstraintEngine {
 
     /** Resolve the matching plugin for this entity. */
     public static StarloguePlugin getPlugin(SectorEntityToken entity) {
+        return getPlugin(entity, null);
+    }
+
+    public static StarloguePlugin getPlugin(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
         for (StarloguePlugin p : allPlugins()) {
-            if (p.canEngage(entity)) return p;
+            if (p.canEngage(entity, memoryMap)) return p;
         }
         return null;
     }
