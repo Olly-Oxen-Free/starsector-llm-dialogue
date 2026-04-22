@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-MOD_DIR="/home/jayden-eppcohen/Documents/Projects/Starsector-Mods/workspace/patches/Starlogue"
+MOD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLASSES_DIR="$MOD_DIR/jars/classes"
 JAR_FILE="$MOD_DIR/jars/Starlogue.jar"
 GAME="/home/jayden-eppcohen/Games/Starsector"
