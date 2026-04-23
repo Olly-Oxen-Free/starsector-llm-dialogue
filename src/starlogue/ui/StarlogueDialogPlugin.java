@@ -5,13 +5,18 @@ import com.fs.starfarer.api.EveryFrameScript;
 import com.fs.starfarer.api.campaign.*;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import com.fs.starfarer.api.combat.EngagementResultAPI;
-import com.fs.starfarer.api.ui.CustomPanelAPI;
+import starlogue.engine.FleetSnapshotFormatter;
 import com.fs.starfarer.api.ui.TextFieldAPI;
 import com.fs.starfarer.api.ui.TooltipMakerAPI;
+import org.lwjgl.input.Keyboard;
 import starlogue.engine.*;
 import starlogue.llm.*;
 import starlogue.api.StarlogueAPI;
+import starlogue.config.LlmBackendConfig;
+import starlogue.debug.ConversationAuditLog;
+import starlogue.debug.DebugSessionLog;
 import starlogue.provider.StarloguePlugin;
+import org.json.JSONObject;
 import org.apache.log4j.Logger;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -26,6 +31,14 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private final SectorEntityToken target;
     private final Map<String, MemoryAPI> memoryMap;
+    /** Dialog plugin that was installed before we swapped in — restored on clean exit. */
+    private final InteractionDialogPlugin priorPlugin;
+    /** Option panel snapshot captured before we swapped in — restored on clean exit. */
+    private final List<Object> priorOptions;
+    /** Becomes true if any action tool runs during the conversation. Dirty state means
+     *  we dismiss on exit instead of returning to the prior point. */
+    private boolean toolCallMade = false;
+
     private GameContext ctx;
     private EvaluatedActionSet actionSet;
     private final ConversationHistory history = new ConversationHistory();
@@ -36,14 +49,37 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private final AtomicReference<LLMResponse> pending = new AtomicReference<LLMResponse>(null);
     private final AtomicReference<Exception> pendingError = new AtomicReference<Exception>(null);
     private String pendingUserMessage = null;
+    private final String conversationId = ConversationAuditLog.newConversationId();
+    private boolean conversationAuditClosed = false;
+    /** Counts LLM requests in this dialog (initial greeting = 1). */
+    private int llmRequestOrdinal = 0;
+
+    /** The text field at the bottom of the chat the player types into. Recreated each turn. */
+    private TextFieldAPI inputField;
+    /** True while an input field is the last thing appended to the text panel — suppresses the
+     *  waiting-dots animation so we don't overwrite the field. */
+    private boolean inputFieldIsLatest = false;
+
+    private static final String OPT_SEND = "starlogue_send";
+    private static final String OPT_END  = "starlogue_end";
+    private static final String[] WAIT_FRAMES = new String[] { "-", "\\", "|", "/" };
 
     public StarlogueDialogPlugin(SectorEntityToken target) {
-        this(target, null);
+        this(target, null, null, null);
     }
 
     public StarlogueDialogPlugin(SectorEntityToken target, Map<String, MemoryAPI> memoryMap) {
+        this(target, memoryMap, null, null);
+    }
+
+    public StarlogueDialogPlugin(SectorEntityToken target,
+                                 Map<String, MemoryAPI> memoryMap,
+                                 InteractionDialogPlugin priorPlugin,
+                                 List<Object> priorOptions) {
         this.target = target;
         this.memoryMap = memoryMap;
+        this.priorPlugin = priorPlugin;
+        this.priorOptions = priorOptions;
     }
 
     // ── InteractionDialogPlugin ───────────────────────────────────────────
@@ -56,9 +92,10 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
         try {
             ctx = ConstraintEngine.buildContext(target, memoryMap);
-            actionSet = ConstraintEngine.evaluate(target, ctx);
+            actionSet = ConstraintEngine.evaluate(target, ctx, memoryMap);
             ctx.evaluatedSet = actionSet;
             StarlogueAPI.setCurrentContext(ctx);
+            ConversationAuditLog.logConversationStart(conversationId, target, ctx, actionSet);
 
             String speaker = ctx.speakerName != null
                 ? ctx.speakerName
@@ -67,7 +104,8 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
             // Validate config before making the LLM call so misconfiguration is visible
             // in-dialog instead of causing a silent dismiss.
-            String configError = validateConfig();
+            LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
+            String configError = validateConfig(cfg);
             if (configError != null) {
                 reportError(configError);
                 return;
@@ -81,12 +119,71 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     @Override
     public void optionSelected(String optionText, Object optionData) {
-        if ("starlogue_input".equals(optionData)) {
-            showInputDialog();
-        } else if ("starlogue_end".equals(optionData)) {
-            StarlogueAPI.clearCurrentContext();
-            dialog.dismiss();
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("optionData", optionData != null ? String.valueOf(optionData) : "null");
+            d.put("state", String.valueOf(state));
+            d.put("hasInputField", inputField != null);
+            d.put("inputFieldIsLatest", inputFieldIsLatest);
+            DebugSessionLog.log("H_UI_SEND", "StarlogueDialogPlugin.optionSelected", "option", d.toString());
+        } catch (Throwable ignore) { }
+        // #endregion
+        if (OPT_SEND.equals(optionData)) {
+            submitCurrentInput();
+        } else if (OPT_END.equals(optionData)) {
+            exitConversation();
         }
+    }
+
+    /**
+     * Ends the Starlogue conversation. If no tool call was made and we have a prior
+     * plugin + option panel snapshot, swap back so the player resumes the parent
+     * dialog at the exact menu they were on before opening the comm link. If a tool
+     * ran, the parent dialog's state may be stale (reputation changed, fleet stance
+     * flipped, etc.) — in that case we dismiss outright.
+     */
+    private void exitConversation() {
+        closeConversationAudit("player_exit");
+        // Peaceful fleet comms: brief no-engage window so closing the LLM layer is less likely
+        // to snap straight into a hostile pursuit in some encounter states.
+        try {
+            if (!toolCallMade && ctx != null && ctx.fleet != null) {
+                CampaignFleetAPI pf = Global.getSector() != null ? Global.getSector().getPlayerFleet() : null;
+                float cool = 2.5f;
+                if (pf != null) {
+                    try { pf.setNoEngaging(cool); } catch (Throwable ignored) { }
+                }
+                try { ctx.fleet.setNoEngaging(cool); } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+        StarlogueAPI.clearCurrentContext();
+        if (!toolCallMade && priorPlugin != null) {
+            try {
+                dialog.setPlugin(priorPlugin);
+                OptionPanelAPI op = dialog.getOptionPanel();
+                if (op != null && priorOptions != null) {
+                    try {
+                        // restoreSavedOptions replaces the panel's option list wholesale,
+                        // so there's no need to clearOptions first (which can corrupt the
+                        // panel state for rule-based parent dialogs).
+                        op.restoreSavedOptions(priorOptions);
+                    } catch (Throwable t) {
+                        log.warn("Starlogue: restoreSavedOptions threw on exit", t);
+                    }
+                }
+                // Re-drive the parent rules engine so it has a chance to refresh memory-derived state.
+                try {
+                    if (priorPlugin instanceof com.fs.starfarer.api.campaign.RuleBasedDialog) {
+                        ((com.fs.starfarer.api.campaign.RuleBasedDialog) priorPlugin).updateMemory();
+                    }
+                } catch (Throwable ignored) { }
+                return;
+            } catch (Throwable t) {
+                log.warn("Starlogue: failed to restore prior dialog plugin; falling back to dismiss", t);
+            }
+        }
+        dialog.dismiss();
     }
 
     @Override
@@ -97,9 +194,18 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         if (state != State.WAITING) return;
         waitTimer += amount;
 
-        // Animated waiting indicator
-        int dots = ((int)(waitTimer / 0.4f) % 3) + 1;
-        text.replaceLastParagraph("." + new String(new char[dots]).replace("\0", "."));
+        // Animated waiting indicator — only safe to run when the last thing in the text
+        // panel is a regular paragraph (e.g. "..."). If the last append was an inline
+        // text field (input), replaceLastParagraph would clobber it.
+        if (!inputFieldIsLatest) {
+            int idx = ((int) (waitTimer / 0.2f)) % WAIT_FRAMES.length;
+            text.replaceLastParagraph("Starlogue is processing your message " + WAIT_FRAMES[idx]);
+        }
+        // Always mirror status on the option row (some builds rarely refresh text-panel animations).
+        try {
+            int idx = ((int) (waitTimer / 0.2f)) % WAIT_FRAMES.length;
+            options.setOptionText("⌛ Working… " + WAIT_FRAMES[idx], OPT_SEND);
+        } catch (Throwable ignored) { }
 
         LLMResponse response = pending.getAndSet(null);
         if (response != null) {
@@ -120,7 +226,8 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             state = State.IDLE;
             waitTimer = 0f;
             pendingUserMessage = null;
-            reportError("LLM call failed: " + describe(err));
+            ConversationAuditLog.logToolCall(conversationId, "", null, "llm_error", describe(err));
+            reportError(friendlyLlmFailure(err));
             return;
         }
 
@@ -129,6 +236,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             state = State.IDLE;
             waitTimer = 0f;
             pendingUserMessage = null;
+            ConversationAuditLog.logToolCall(conversationId, "", null, "llm_timeout", "30s timeout");
             reportError("LLM call timed out after 30s. Check that your endpoint/model is reachable.");
         }
     }
@@ -144,43 +252,90 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     // ── Private helpers ───────────────────────────────────────────────────
 
-    private void showInputDialog() {
-        dialog.showCustomDialog(520f, 130f, new CustomDialogDelegate() {
-            private TextFieldAPI field;
-
-            @Override
-            public void createCustomDialog(CustomPanelAPI panel,
-                                           CustomDialogDelegate.CustomDialogCallback callback) {
-                TooltipMakerAPI tooltip = panel.createUIElement(500f, 80f, false);
-                field = tooltip.addTextField(500f, 24f);
-                field.setMaxChars(400);
-                field.grabFocus();
-                panel.addUIElement(tooltip);
+    /**
+     * Appends an inline text field to the bottom of the chat panel and focuses it.
+     * The field lives inside a tooltip region on the text panel, so it scrolls with
+     * the rest of the conversation and feels like a natural chat composer.
+     *
+     * <p>The previously-active field (if any) is left in the scrollback — visually it
+     * stays next to the message the player sent, which is fine; the reference is just
+     * overwritten so {@link #submitCurrentInput()} only reads the newest one.
+     */
+    private void appendInputField() {
+        try {
+            TooltipMakerAPI tooltip = text.beginTooltip();
+            // Wider / taller composer. Keep width-based limiting ON so the field wraps
+            // to multiple lines instead of extending as one long horizontal line.
+            inputField = tooltip.addTextField(800f, 120f);
+            if (inputField != null) {
+                try {
+                    inputField.setLimitByStringWidth(true);
+                } catch (Throwable ignored) { }
+                inputField.setMaxChars(200_000);
+                inputField.setUndoOnEscape(false);
+                inputField.setHandleCtrlV(true);
             }
-
-            @Override
-            public boolean hasCancelButton() { return true; }
-
-            @Override public String getConfirmText() { return "Send"; }
-            @Override public String getCancelText()  { return "Cancel"; }
-
-            @Override
-            public void customDialogConfirm() {
-                String input = (field != null) ? field.getText().trim() : "";
-                if (!input.isEmpty()) handlePlayerInput(input);
-                else showMainOptions();
+            text.addTooltip();
+            if (inputField != null) {
+                inputFieldIsLatest = true;
+                inputField.grabFocus();
+            } else {
+                // Some dialogs can return null without throwing. Keep retrying on refresh.
+                inputFieldIsLatest = false;
+                log.warn("Starlogue: addTextField returned null (no exception); will retry");
+                // #region agent log
+                try {
+                    DebugSessionLog.log("H_UI", "StarlogueDialogPlugin.appendInputField", "textfield-null", "{}");
+                } catch (Throwable ignore) { }
+                // #endregion
             }
+        } catch (Throwable t) {
+            log.warn("Starlogue: inline text field unavailable, falling back to paragraph-only mode", t);
+            inputField = null;
+            inputFieldIsLatest = false;
+        }
+    }
 
-            @Override
-            public void customDialogCancel() { showMainOptions(); }
-
-            @Override
-            public CustomUIPanelPlugin getCustomPanelPlugin() { return null; }
-        });
+    /** Pulls text from the current input field, clears it, and sends it to the LLM. */
+    private void submitCurrentInput() {
+        if (state == State.WAITING) {
+            // #region agent log
+            try {
+                DebugSessionLog.log("H_UI_SEND", "StarlogueDialogPlugin.submitCurrentInput", "ignored-while-waiting", "{}");
+            } catch (Throwable ignore) { }
+            // #endregion
+            return; // guard — shortcut can fire while disabled
+        }
+        String input = (inputField != null) ? inputField.getText() : "";
+        if (input == null) input = "";
+        String normalized = input.replace("\r\n", "\n");
+        if (normalized.trim().isEmpty()) {
+            // #region agent log
+            try {
+                JSONObject d = new JSONObject();
+                d.put("hasInputField", inputField != null);
+                d.put("inputFieldIsLatest", inputFieldIsLatest);
+                DebugSessionLog.log("H_UI_SEND", "StarlogueDialogPlugin.submitCurrentInput", "ignored-empty-input", d.toString());
+            } catch (Throwable ignore) { }
+            // #endregion
+            if (inputField != null) inputField.grabFocus();
+            return;
+        }
+        // Snapshot & freeze the field the player just typed in so the scrollback shows
+        // what was said (text remains visible) but re-editing a stale field has no effect.
+        TextFieldAPI submitted = inputField;
+        inputField = null;
+        handlePlayerInput(normalized);
+        // Let the old field keep its text visually but drop focus.
+        if (submitted != null) {
+            try { submitted.setText(input); } catch (Throwable ignore) {}
+        }
     }
 
     private void handlePlayerInput(String input) {
         text.addParagraph("You: " + input);
+        ConversationAuditLog.logUserMessage(conversationId, input);
+        inputFieldIsLatest = false;
         sendToLLM(input);
     }
 
@@ -194,22 +349,48 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     }
 
     private void sendToLLMImpl(String userMessage) {
+        LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
+        String configError = validateConfig(cfg);
+        if (configError != null) {
+            reportError(configError);
+            return;
+        }
+
         state = State.WAITING;
         waitTimer = 0f;
-        text.addParagraph("...");
+        text.addParagraph("Starlogue is processing your message -");
+        inputFieldIsLatest = false;
         pendingUserMessage = userMessage;
-        showMainOptions(); // refresh so "Say something..." is disabled while we wait
+        showMainOptions(); // refresh so "Send" is disabled while we wait
 
-        String systemPrompt = buildSystemPrompt();
+        llmRequestOrdinal++;
+        boolean includeFleetSighting = ctx.fleet != null && llmRequestOrdinal == 1;
+        String systemPrompt = buildSystemPrompt(includeFleetSighting);
 
-        // Read settings via LunaLib (keys match LunaSettings.csv fieldIDs)
-        String provider  = safeGetString("starlogue_provider",    "openai_compatible");
-        String endpoint  = safeGetString("starlogue_endpoint",    "http://localhost:11434/v1");
-        String apiKey    = safeGetString("starlogue_api_key",     "");
-        String model     = safeGetString("starlogue_model",       "mistral");
+        // Single credentials snapshot (same parse for validate + request).
+        final List<LlmBackendConfig.BackendOption> backends = cfg.backends;
+        String model     = cfg.model;
         float  temp      = safeGetFloat ("starlogue_temperature",  0.8f);
         int    maxTokens = safeGetInt   ("starlogue_max_tokens",   300);
         int    maxTurns  = safeGetInt   ("starlogue_history_turns", 10);
+
+        LlmBackendConfig.BackendOption first = backends.get(0);
+        log.info("Starlogue: effective LLM settings — backends=" + backends.size()
+            + " firstProvider=" + first.provider
+            + " firstModel=" + first.model
+            + " firstApiKeyChars=" + (first.apiKey != null ? first.apiKey.length() : 0));
+
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("backendCount", backends.size());
+            d.put("provider", first.provider);
+            d.put("apiKeyLen", first.apiKey != null ? first.apiKey.length() : 0);
+            d.put("modelLen", model != null ? model.length() : 0);
+            d.put("endpointLen", first.customEndpoint != null ? first.customEndpoint.length() : 0);
+            DebugSessionLog.log("H_API", "StarlogueDialogPlugin.sendToLLMImpl", "backend", d.toString());
+        } catch (Throwable ignore) { }
+        // #endregion
 
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         Map<String, Object> sysMsg = new LinkedHashMap<String, Object>();
@@ -222,27 +403,36 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         userMsg.put("content", userMessage);
         messages.add(userMsg);
 
-        List<Map<String, Object>> tools = ConstraintEngine.buildToolsArray(actionSet);
-        LLMRequest request = new LLMRequest(messages, tools, model, temp, maxTokens);
+        final List<Map<String, Object>> tools = ConstraintEngine.buildToolsArray(actionSet);
+        log.info("Starlogue: sending request — tools=" + tools.size()
+            + " provider=" + first.provider + " model=" + first.model);
 
         if (safeGetBoolean("starlogue_debug_prompts", false)) {
             log.debug("Starlogue system prompt:\n" + systemPrompt);
         }
 
-        final LLMClient client = "anthropic".equals(provider)
-            ? new AnthropicClient(apiKey)
-            : new OpenAIClient(endpoint, apiKey);
-
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
-                try {
-                    LLMResponse response = client.complete(request);
-                    pending.set(response);
-                } catch (Exception e) {
-                    log.error("Starlogue: LLM call failed", e);
-                    pendingError.set(e);
+                StringBuilder attemptErrors = new StringBuilder();
+                for (int i = 0; i < backends.size(); i++) {
+                    LlmBackendConfig.BackendOption backend = backends.get(i);
+                    LLMRequest request = new LLMRequest(messages, tools, backend.model, temp, maxTokens);
+                    try {
+                        LLMResponse response = completeWithBackendRetry(createClientForBackend(backend), backend, request);
+                        pending.set(response);
+                        return;
+                    } catch (Exception e) {
+                        String msg = e.getMessage() != null ? e.getMessage() : describe(e);
+                        if (attemptErrors.length() > 0) attemptErrors.append(" | ");
+                        attemptErrors.append("#").append(i + 1).append(" ")
+                            .append(backend.provider).append("/")
+                            .append(backend.model).append(": ").append(msg);
+                        log.warn("Starlogue: backend attempt " + (i + 1) + "/" + backends.size()
+                            + " failed for provider=" + backend.provider + " model=" + backend.model, e);
+                    }
                 }
+                pendingError.set(new RuntimeException("All configured backends failed: " + attemptErrors.toString()));
             }
         });
         t.setDaemon(true);
@@ -259,9 +449,26 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         } else {
             text.replaceLastParagraph(""); // tool-only response
         }
+        ConversationAuditLog.logAssistantMessage(conversationId,
+            content != null ? content : "",
+            response.toolCalls != null ? response.toolCalls.size() : 0);
 
+        if (response.reasoning != null && !response.reasoning.isBlank()) {
+            ConversationAuditLog.logModelThinking(conversationId, response.reasoning);
+        }
+        if (response.usageSummary != null && !response.usageSummary.isBlank()) {
+            try {
+                JSONObject meta = new JSONObject();
+                meta.put("usage", response.usageSummary);
+                ConversationAuditLog.logLlmMeta(conversationId, "response", meta);
+            } catch (Throwable ignored) { }
+        }
+
+        int toolCallCount = response.toolCalls.size();
+        log.info("Starlogue: LLM response received — toolCalls=" + toolCallCount
+            + " hasContent=" + (content != null && !content.isBlank()));
         if (safeGetBoolean("starlogue_debug_tools", false)) {
-            log.debug("Starlogue: " + response.toolCalls.size() + " tool call(s)");
+            log.debug("Starlogue: " + toolCallCount + " tool call(s)");
         }
 
         for (LLMToolCall call : response.toolCalls) {
@@ -288,10 +495,22 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         }
         if (action == null) {
             log.warn("Starlogue: LLM called unavailable tool '" + call.toolId + "' — ignoring");
+            ConversationAuditLog.logToolCall(conversationId, call.toolId, ConversationAuditLog.safeArgsJson(call.args),
+                "unavailable", "tool not in current action set");
             return;
         }
-
-        action.execute(ctx, call.args);
+        try {
+            action.execute(ctx, call.args);
+            toolCallMade = true;
+            ConversationAuditLog.logToolCall(conversationId, call.toolId, ConversationAuditLog.safeArgsJson(call.args),
+                "ok", "executed");
+        } catch (Throwable t) {
+            log.error("Starlogue: tool call failed: " + call.toolId, t);
+            ConversationAuditLog.logToolCall(conversationId, call.toolId, ConversationAuditLog.safeArgsJson(call.args),
+                "error", describe(t));
+            text.addParagraph("[Tool error] " + call.toolId + " failed: " + describe(t));
+            return;
+        }
 
         // Check if the action requested a dialog handoff (e.g. tournament)
         final InteractionDialogPlugin handoff = StarlogueAPI.consumeHandoff();
@@ -322,12 +541,56 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private void showMainOptions() {
         options.clearOptions();
-        options.addOption("Say something...", "starlogue_input");
-        options.addOption("End conversation", "starlogue_end");
+        options.addOption("Send (Enter)", OPT_SEND);
+        options.addOption("End conversation", OPT_END);
+
+        // Keyboard shortcuts — OptionPanelAPI order is (data, key, ctrl, alt, shift, putLast).
+        // Plain Enter sends (single-line field); Escape ends.
+        try {
+            options.setShortcut(OPT_SEND, Keyboard.KEY_RETURN, false, false, false, false);
+            options.setShortcut(OPT_END,  Keyboard.KEY_ESCAPE, false, false, false, false);
+            dialog.setOptionOnEscape("End conversation", OPT_END);
+        } catch (Throwable t) {
+            // shortcuts are nice-to-have; a missing API shouldn't break the dialog.
+        }
+
         if (state == State.WAITING) {
-            // Disable input while we're waiting on the LLM, but keep "End"
-            // available so the player can always bail out cleanly.
-            options.setEnabled("starlogue_input", false);
+            // While waiting on the LLM, disable Send but keep End available so the
+            // player can always bail out cleanly. Don't add a fresh input field —
+            // the previous one is still visible in scrollback and the "..." animation
+            // needs the text panel's last element to remain a paragraph.
+            options.setEnabled(OPT_SEND, false);
+            return;
+        }
+
+        // Idle — add a fresh input line at the bottom of the chat so the player can type.
+        // Only add one if the current "last thing" isn't already an input field (avoids
+        // stacking multiple fields if showMainOptions is called twice in a row).
+        if (inputFieldIsLatest) {
+            boolean stale = (inputField == null);
+            if (!stale && inputField != null) {
+                try {
+                    // Touching the field can throw if its UI backing was disposed.
+                    inputField.getText();
+                } catch (Throwable t) {
+                    stale = true;
+                }
+            }
+            if (stale) {
+                inputFieldIsLatest = false;
+                inputField = null;
+                // #region agent log
+                try {
+                    DebugSessionLog.log("H_UI", "StarlogueDialogPlugin.showMainOptions",
+                        "detected-stale-inputfield-recreate", "{}");
+                } catch (Throwable ignore) { }
+                // #endregion
+            }
+        }
+        if (!inputFieldIsLatest) {
+            appendInputField();
+        } else if (inputField != null) {
+            inputField.grabFocus();
         }
     }
 
@@ -335,11 +598,16 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private void reportError(String message) {
         if (text != null) {
             try {
-                text.replaceLastParagraph("[Starlogue error] " + message);
+                if (inputFieldIsLatest) {
+                    text.addParagraph("[Starlogue error] " + message);
+                } else {
+                    text.replaceLastParagraph("[Starlogue error] " + message);
+                }
             } catch (Throwable t) {
                 text.addParagraph("[Starlogue error] " + message);
             }
             text.addParagraph("You can try typing another prompt, or end the conversation.");
+            inputFieldIsLatest = false;
         }
         state = State.IDLE;
         waitTimer = 0f;
@@ -348,26 +616,100 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     /**
      * Returns null when config looks usable, or a human-readable reason the LLM call
-     * cannot proceed. We only block on conditions that guarantee breakage (missing
-     * endpoint, missing API key when the provider is the remote Anthropic one).
-     * LunaLib being absent is fine — defaults will be used.
+     * cannot proceed. Tailored per provider: only block on fields that actually matter
+     * for the selected backend. LunaLib being absent is fine — defaults will be used.
      */
-    private String validateConfig() {
-        String provider = safeGetString("starlogue_provider", "openai_compatible");
-        String endpoint = safeGetString("starlogue_endpoint", "http://localhost:11434/v1");
-        String apiKey   = safeGetString("starlogue_api_key",  "");
-        String model    = safeGetString("starlogue_model",    "mistral");
-        if (endpoint == null || endpoint.isEmpty()) {
-            return "No LLM endpoint is configured. Open LunaLib settings and set 'starlogue_endpoint'.";
+    private String validateConfig(LlmBackendConfig.Snapshot cfg) {
+        if (cfg == null || cfg.backends == null || cfg.backends.isEmpty()) {
+            return "No LLM backend is configured. Set starlogue_backends[] in saves/common/Starlogue_credentials.json "
+                + "or use legacy starlogue_provider/starlogue_model fields.";
         }
-        if (model == null || model.isEmpty()) {
-            return "No LLM model is configured. Open LunaLib settings and set 'starlogue_model'.";
+        String firstError = null;
+        for (int i = 0; i < cfg.backends.size(); i++) {
+            String err = validateBackendOption(cfg.backends.get(i));
+            if (err == null) return null; // at least one backend is runnable
+            if (firstError == null) firstError = "Backend #" + (i + 1) + ": " + err;
         }
-        if ("anthropic".equals(provider) && (apiKey == null || apiKey.isEmpty())) {
-            return "Anthropic provider selected but 'starlogue_api_key' is empty. "
-                + "Paste your Anthropic API key into LunaLib settings.";
+        return firstError != null ? firstError : "No usable backend configuration found.";
+    }
+
+    private String validateBackendOption(LlmBackendConfig.BackendOption b) {
+        if (b == null) return "entry is null.";
+        if (b.model == null || b.model.isEmpty()) {
+            return "model is empty. Set starlogue_model.";
+        }
+        if ("custom".equals(b.provider) && (b.customEndpoint == null || b.customEndpoint.isEmpty())) {
+            return "provider=custom requires starlogue_endpoint (e.g. http://localhost:8080/v1).";
+        }
+        if (("openai".equals(b.provider) || "anthropic".equals(b.provider) || "openrouter".equals(b.provider)
+                || "xai".equals(b.provider))
+                && (b.apiKey == null || b.apiKey.isEmpty())) {
+            return "provider=" + b.provider + " requires starlogue_api_key.";
         }
         return null;
+    }
+
+    private LLMClient createClientForBackend(LlmBackendConfig.BackendOption b) {
+        if ("anthropic".equals(b.provider)) {
+            return new AnthropicClient(b.apiKey);
+        } else if ("openrouter".equals(b.provider)) {
+            return new OpenRouterClient(b.apiKey);
+        } else if ("xai".equals(b.provider)) {
+            return new XaiClient(b.apiKey, b.customEndpoint);
+        } else if ("openai".equals(b.provider)) {
+            return new OpenAIClient("https://api.openai.com/v1", b.apiKey);
+        } else if ("ollama".equals(b.provider)) {
+            return new OpenAIClient("http://localhost:11434/v1", b.apiKey);
+        }
+        return new OpenAIClient(b.customEndpoint, b.apiKey); // custom
+    }
+
+    private LLMResponse completeWithBackendRetry(LLMClient client,
+                                                 LlmBackendConfig.BackendOption backend,
+                                                 LLMRequest request) throws Exception {
+        try {
+            return client.complete(request);
+        } catch (Exception e) {
+            if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterNoTools(e)) {
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("model", request.model);
+                    d.put("retryMode", "same-model-no-tools");
+                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
+                    DebugSessionLog.log("H_OR_TOOLLESS", "StarlogueDialogPlugin.sendToLLMImpl",
+                        "retry-without-tools", d.toString());
+                } catch (Throwable ignore) { }
+                log.warn("Starlogue: OpenRouter model does not support tool use; retrying once without tools");
+                LLMRequest retryNoTools = new LLMRequest(request.messages,
+                    java.util.Collections.<Map<String, Object>>emptyList(),
+                    request.model, request.temperature, request.maxTokens);
+                return client.complete(retryNoTools);
+            }
+            if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterError(e)) {
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("model", request.model);
+                    d.put("retryModel", "openrouter/auto");
+                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
+                    DebugSessionLog.log("H_OR_RETRY", "StarlogueDialogPlugin.sendToLLMImpl",
+                        "retry-on-provider-error", d.toString());
+                } catch (Throwable ignore) { }
+                log.warn("Starlogue: OpenRouter provider error for model=" + request.model
+                    + ", retrying once with openrouter/auto");
+                LLMRequest retry = new LLMRequest(request.messages, request.tools, "openrouter/auto",
+                    request.temperature, request.maxTokens);
+                return client.complete(retry);
+            }
+            if (shouldRetryWithDefaultTemperature(e, request.temperature)) {
+                float fallbackTemp = defaultFallbackTemperature();
+                log.warn("Starlogue: invalid temperature for model=" + request.model
+                    + ", retrying once with fallback temperature=" + fallbackTemp);
+                LLMRequest retry = new LLMRequest(request.messages, request.tools, request.model,
+                    fallbackTemp, request.maxTokens);
+                return client.complete(retry);
+            }
+            throw e;
+        }
     }
 
     private static String describe(Throwable t) {
@@ -378,16 +720,122 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return cls + ": " + msg;
     }
 
+    /**
+     * Explains common failures (e.g. Ollama not running → ConnectException) using effective provider
+     * from credentials so the in-dialog message matches {@code starsector.log}.
+     */
+    private static String friendlyLlmFailure(Exception e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof java.net.ConnectException) {
+                LlmBackendConfig.Snapshot s = LlmBackendConfig.load();
+                if ("ollama".equals(s.provider)) {
+                    return "Cannot connect to Ollama (http://127.0.0.1:11434). Start the Ollama app, or edit "
+                        + "saves/common/Starlogue_credentials.json: set starlogue_provider (e.g. openrouter or xai) "
+                        + "and starlogue_api_key for a cloud model.";
+                }
+                if ("xai".equals(s.provider)) {
+                    return "Cannot reach xAI (https://api.x.ai). Check your network, firewall, or "
+                        + "starlogue_endpoint in saves/common/Starlogue_credentials.json if using a proxy.";
+                }
+                if ("custom".equals(s.provider)) {
+                    return "Cannot connect to the custom LLM server. Check starlogue_endpoint in "
+                        + "saves/common/Starlogue_credentials.json and that the process is running.";
+                }
+            }
+        }
+        String msg = e.getMessage();
+        if (msg != null && (msg.contains("HTTP 429") || msg.contains(" 429 "))) {
+            LlmBackendConfig.Snapshot s = LlmBackendConfig.load();
+            if ("openrouter".equals(s.provider)) {
+                return "OpenRouter rate-limited or provider capacity error (HTTP 429). "
+                    + "Starlogue retries once with openrouter/auto automatically. If it still fails, "
+                    + "try a non-free model or retry later.";
+            }
+        }
+        if (msg != null && (msg.contains("HTTP 502") || msg.contains(" 502 "))) {
+            LlmBackendConfig.Snapshot s = LlmBackendConfig.load();
+            if ("openrouter".equals(s.provider)) {
+                return "OpenRouter upstream provider error (HTTP 502). "
+                    + "Starlogue retries once with openrouter/auto automatically. "
+                    + "If it still fails, retry later or switch model/provider route.";
+            }
+        }
+        if (msg != null && (msg.contains("HTTP 401") || msg.contains(" 401 "))) {
+            LlmBackendConfig.Snapshot s = LlmBackendConfig.load();
+            if ("openrouter".equals(s.provider)) {
+                if (s.apiKey.isEmpty()) {
+                    return "OpenRouter: starlogue_api_key is empty in saves/common/Starlogue_credentials.json. "
+                        + "Create a key at https://openrouter.ai/keys and paste it, then set starlogue_model to "
+                        + "a model id (e.g. openai/gpt-4o-mini).";
+                }
+                return "OpenRouter returned HTTP 401. Your key may be invalid, revoked, or not pasted fully. "
+                    + "Regenerate at https://openrouter.ai/keys and ensure the file is valid JSON (no extra quotes).";
+            }
+            if ("xai".equals(s.provider)) {
+                return "xAI returned HTTP 401. Create or rotate an API key at https://console.x.ai and update "
+                    + "starlogue_api_key in saves/common/Starlogue_credentials.json.";
+            }
+            return "LLM backend returned HTTP 401 (invalid API key). Check starlogue_api_key in "
+                + "saves/common/Starlogue_credentials.json for backend: " + s.provider + ".";
+        }
+        if (msg != null && (msg.contains("HTTP 402") || msg.contains(" 402 "))) {
+            return "LLM backend returned HTTP 402 (payment required / insufficient credits). "
+                + "Top up your account credits at your provider, or switch to a free model. "
+                + "For OpenRouter free models see https://openrouter.ai/models?order=newest&supported_parameters=tools";
+        }
+        return "LLM call failed: " + describe(e);
+    }
+
+    private static boolean shouldRetryOpenRouterError(Exception e) {
+        String msg = e != null ? e.getMessage() : null;
+        if (msg == null) return false;
+        boolean is429 = msg.contains("HTTP 429") || msg.contains(" 429 ");
+        boolean is502 = msg.contains("HTTP 502") || msg.contains(" 502 ");
+        boolean providerErr = msg.toLowerCase().contains("provider returned error");
+        return is429 || (is502 && providerErr);
+    }
+
+    private static boolean shouldRetryOpenRouterNoTools(Exception e) {
+        String msg = e != null ? e.getMessage() : null;
+        if (msg == null) return false;
+        String m = msg.toLowerCase();
+        return (m.contains("http 404") || m.contains("http 400"))
+            && m.contains("no endpoints found that support tool use");
+    }
+
+    private static boolean shouldRetryWithDefaultTemperature(Exception e, float currentTemp) {
+        if (Math.abs(currentTemp - defaultFallbackTemperature()) < 0.0001f) return false;
+        String msg = e != null ? e.getMessage() : null;
+        if (msg == null) return false;
+        String m = msg.toLowerCase();
+        return m.contains("temperature")
+            && (m.contains("invalid")
+                || m.contains("only 1 is allowed")
+                || m.contains("must be")
+                || m.contains("unsupported value"));
+    }
+
+    private static float defaultFallbackTemperature() {
+        return 1.0f;
+    }
+
     /** Called on any unrecoverable error. Cleans up and exits to vanilla dialog flow. */
     private void failSafe() {
         state = State.ERROR;
         pending.set(null);
         pendingError.set(null);
+        closeConversationAudit("failsafe");
         StarlogueAPI.clearCurrentContext();
         if (dialog != null) dialog.dismiss();
     }
 
-    private String buildSystemPrompt() {
+    private void closeConversationAudit(String reason) {
+        if (conversationAuditClosed) return;
+        conversationAuditClosed = true;
+        ConversationAuditLog.logConversationEnd(conversationId, reason);
+    }
+
+    private String buildSystemPrompt(boolean includeFleetSighting) {
         StringBuilder sb = new StringBuilder();
 
         // Character block
@@ -406,7 +854,8 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             : (ctx.person != null ? ctx.person.getNameString() : "(automated)");
         sb.append("- Your name: ").append(name).append("\n");
         if (ctx.npcFaction != null) {
-            sb.append("- Your faction: ").append(ctx.npcFaction.getDisplayName()).append("\n");
+            sb.append("- Your faction: ").append(ctx.npcFaction.getDisplayName())
+              .append(" (id: ").append(ctx.npcFaction.getId()).append(")").append("\n");
         }
         // Fleet-strength line only meaningful when a fleet is actually present.
         if (ctx.fleet != null) {
@@ -414,6 +863,16 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             if (ctx.strengthDelta > 0.15f) sb.append("you outgun the player\n");
             else if (ctx.strengthDelta < -0.15f) sb.append("player outguns you\n");
             else sb.append("roughly equal forces\n");
+            sb.append("- Player transponder (as seen now): ")
+                .append(ctx.playerTransponderOn ? "ON" : "OFF").append("\n");
+        }
+        if (includeFleetSighting && ctx.fleet != null) {
+            sb.append("\n");
+            sb.append(FleetSnapshotFormatter.formatSightingBlock(
+                ctx.fleet,
+                Global.getSector() != null ? Global.getSector().getPlayerFleet() : null,
+                FleetSnapshotFormatter.maxShipsDefault()));
+            sb.append("\n");
         }
         if (ctx.repLevel != null) {
             sb.append("- Faction standing with player: ").append(ctx.repLevel).append("\n");
@@ -437,6 +896,29 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         for (String note : ctx.contextNotes) {
             sb.append("- ").append(note).append("\n");
         }
+
+        if (ctx.fleet != null || !ctx.playerTransponderOn) {
+            sb.append("\nIDENTITY / EVIDENCE RULES:\n");
+            sb.append("- When the player's transponder is OFF, false identities are possible in dialogue, ");
+            sb.append("but obvious fleet composition (see VISUAL_SIGHTING_REPORT when present) may contradict claims.\n");
+            sb.append("- Do not claim mind-reading; if you challenge a cover story, use the challenge_* tools or ");
+            sb.append("cite only visible facts from the sighting report and situation notes.\n");
+            sb.append("- When the transponder is ON, pretending to be a different faction is generally implausible.\n");
+        }
+
+        sb.append("\nTOOL USAGE POLICY:\n");
+        sb.append("- FACTION IDENTITY: If you are unsure what your faction (id above) stands for, ");
+        sb.append("who it is allied or hostile with, or what any other faction referenced in conversation ");
+        sb.append("represents, call get_faction_info immediately with that faction's id or name. ");
+        sb.append("This is especially important for sub-factions (e.g. 'lions_guard' is part of ");
+        sb.append("'sindrian_diktat'; call get_faction_info to confirm affiliations).\n");
+        sb.append("- ACTIONS: If your reply commits to an in-world action (combat, retreat/disengage, trade, ");
+        sb.append("intel sharing, reputation shift, or transfer of credits/supplies/fuel), ");
+        sb.append("you must call the corresponding tool in the same response.\n");
+        sb.append("- You may call multiple tools in one response when outcomes are coupled.\n");
+        sb.append("- Do not claim an action happened unless a tool call executed it.\n");
+        sb.append("- Use share_intel for actionable location intel (e.g. nearby derelicts, ");
+        sb.append("stations, fleets, threats) with concrete details.\n");
 
         return sb.toString().trim();
     }
@@ -464,24 +946,19 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return LUNA_AVAILABLE;
     }
 
-    private static String safeGetString(String key, String fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        try {
-            String v = lunalib.lunaSettings.LunaSettings.getString("starlogue", key);
-            return (v != null && !v.isBlank()) ? v : fallback;
-        } catch (Throwable t) {
-            return fallback;
-        }
-    }
-
     private static float safeGetFloat(String key, float fallback) {
         if (!lunaLibAvailable()) return fallback;
+        // LunaLib's CSV loader stores Double-typed fields; read as Double and narrow.
+        // Keep a getFloat fallback for legacy Float-typed rows (should no longer exist).
         try {
-            Float v = lunalib.lunaSettings.LunaSettings.getFloat("starlogue", key);
-            return v != null ? v : fallback;
-        } catch (Throwable t) {
-            return fallback;
-        }
+            Double d = lunalib.lunaSettings.LunaSettings.getDouble("starlogue", key);
+            if (d != null) return d.floatValue();
+        } catch (Throwable ignored) { }
+        try {
+            Float f = lunalib.lunaSettings.LunaSettings.getFloat("starlogue", key);
+            if (f != null) return f;
+        } catch (Throwable ignored) { }
+        return fallback;
     }
 
     private static int safeGetInt(String key, int fallback) {
