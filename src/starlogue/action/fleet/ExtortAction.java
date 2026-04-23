@@ -29,6 +29,14 @@ public class ExtortAction implements StarlogueAction {
         return p;
     }
 
+    @Override
+    public java.util.Map<String, String> getParameterDescriptions() {
+        java.util.Map<String, String> d = new java.util.LinkedHashMap<>();
+        d.put("credits", "Credit demand. Range: 1000-200000. Will be clamped to at most 10% of player's current credits.");
+        d.put("or_else", "The threat if the player refuses (e.g. 'we impound your cargo').");
+        return d;
+    }
+
     @Override public boolean isBluffable() { return false; }
 
     @Override

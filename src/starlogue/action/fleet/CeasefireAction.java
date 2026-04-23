@@ -36,6 +36,13 @@ public class CeasefireAction implements StarlogueAction {
         return p;
     }
 
+    @Override
+    public java.util.Map<String, String> getParameterDescriptions() {
+        java.util.Map<String, String> d = new java.util.LinkedHashMap<>();
+        d.put("duration_days", "Ceasefire length in in-game days. Range: 1-90.");
+        return d;
+    }
+
     @Override public boolean isBluffable() { return false; }
 
     @Override

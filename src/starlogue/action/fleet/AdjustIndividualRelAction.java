@@ -1,7 +1,6 @@
 package starlogue.action.fleet;
 
 import com.fs.starfarer.api.Global;
-import com.fs.starfarer.api.campaign.RepLevel;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import lunalib.lunaSettings.LunaSettings;
 import starlogue.action.StarlogueAction;
@@ -32,16 +31,19 @@ public class AdjustIndividualRelAction implements StarlogueAction {
         return p;
     }
 
+    @Override
+    public java.util.Map<String, String> getParameterDescriptions() {
+        java.util.Map<String, String> d = new java.util.LinkedHashMap<>();
+        d.put("delta", "Individual relationship change. Range: -0.10 to +0.10. Each 0.05 is approximately one reputation tier step.");
+        d.put("reason", "Brief narrative reason for the shift.");
+        return d;
+    }
+
     @Override public boolean isBluffable() { return false; }
 
     @Override
     public boolean isAvailable(GameContext ctx) {
-        // Not available at the extremes (can't improve cooperative, can't worsen vengeful)
-        if (ctx.repLevel == null) return false;
-        // Not available if already cooperative (can't go higher) or vengeful (can't go lower)
-        if (!ctx.repLevel.isAtBest(RepLevel.FRIENDLY)) return false;  // already COOPERATIVE
-        if (ctx.repLevel.isAtBest(RepLevel.VENGEFUL)) return false;
-        return true;
+        return ctx.repLevel != null && ctx.npcFaction != null && ctx.playerFaction != null;
     }
 
     @Override
@@ -55,10 +57,10 @@ public class AdjustIndividualRelAction implements StarlogueAction {
         MemoryAPI playerMem = Global.getSector().getPlayerFleet().getMemory();
         float used = playerMem.contains(capKey) ? playerMem.getFloat(capKey) : 0f;
 
-        Float capFloat = isPositive
-            ? LunaSettings.getFloat("starlogue", "starlogue_rep_gain_cap")
-            : LunaSettings.getFloat("starlogue", "starlogue_rep_loss_cap");
-        float cap = capFloat != null ? capFloat : 20f;
+        Double capDbl = isPositive
+            ? LunaSettings.getDouble("starlogue", "starlogue_rep_gain_cap")
+            : LunaSettings.getDouble("starlogue", "starlogue_rep_loss_cap");
+        float cap = capDbl != null ? capDbl.floatValue() : 20f;
         float allowed = cap - Math.abs(used);
         if (allowed <= 0f) {
             log.debug("Starlogue: monthly rep cap hit for " + (isPositive ? "gain" : "loss"));

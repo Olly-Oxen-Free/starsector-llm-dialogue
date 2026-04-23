@@ -38,6 +38,15 @@ public class TradeOfferAction implements StarlogueAction {
         return p;
     }
 
+    @Override
+    public java.util.Map<String, String> getParameterDescriptions() {
+        java.util.Map<String, String> d = new java.util.LinkedHashMap<>();
+        d.put("commodity_id", "Starsector commodity ID. Valid values: supplies, fuel, crew, metals, ore, heavy_machinery, food, domestic_goods, luxury_goods, organics, volatiles, hand_weapons, marines.");
+        d.put("quantity", "Units to trade. Max 500. Capped to what the NPC fleet actually carries.");
+        d.put("price_per_unit", "Credits per unit. Positive number. A partial trade executes if the player cannot afford the full quantity.");
+        return d;
+    }
+
     @Override public boolean isBluffable() { return false; }
 
     @Override

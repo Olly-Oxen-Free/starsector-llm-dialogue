@@ -27,8 +27,14 @@ public class ConstraintEngine {
 
     static {
         plugins.add(new FleetCaptainPlugin());
-        plugins.add(new PersonInteractionPlugin());
+        // MarketAdmin matches before PersonInteraction so that a top-level market
+        // dialog (where memoryMap's $person often defaults to the admin) is framed
+        // as "hailing the colony authority" rather than as a 1:1 chat with the admin.
+        // MarketAdminPlugin.canEngage self-defers when $person is a *different* person
+        // (bar visitor, quest giver, officer for hire), so those cases still route
+        // to PersonInteractionPlugin.
         plugins.add(new MarketAdminPlugin());
+        plugins.add(new PersonInteractionPlugin());
         plugins.add(new SystemAIPlugin()); // always-true fallback
     }
 
@@ -44,6 +50,7 @@ public class ConstraintEngine {
     }
 
     public static boolean canEngage(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
+        if (StarlogueTargetFilter.isExcluded(entity)) return false;
         for (StarloguePlugin p : allPlugins()) {
             if (p.canEngage(entity, memoryMap)) return true;
         }
@@ -55,6 +62,9 @@ public class ConstraintEngine {
     }
 
     public static GameContext buildContext(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
+        if (StarlogueTargetFilter.isExcluded(entity)) {
+            throw new IllegalStateException("StarlogueTargetFilter excludes entity: " + entity);
+        }
         GameContext ctx = null;
         for (StarloguePlugin p : allPlugins()) {
             if (p.canEngage(entity, memoryMap)) { ctx = p.buildContext(entity, memoryMap); break; }
@@ -78,6 +88,7 @@ public class ConstraintEngine {
     }
 
     public static StarloguePlugin getPlugin(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
+        if (StarlogueTargetFilter.isExcluded(entity)) return null;
         for (StarloguePlugin p : allPlugins()) {
             if (p.canEngage(entity, memoryMap)) return p;
         }
@@ -85,7 +96,17 @@ public class ConstraintEngine {
     }
 
     public static EvaluatedActionSet evaluate(SectorEntityToken entity, GameContext ctx) {
-        StarloguePlugin plugin = getPlugin(entity);
+        return evaluate(entity, ctx, null);
+    }
+
+    /**
+     * Same as {@link #evaluate(SectorEntityToken, GameContext)} but uses {@code memoryMap}
+     * when resolving the active {@link StarloguePlugin} so bar/comm flows match
+     * {@link #buildContext(SectorEntityToken, Map)}.
+     */
+    public static EvaluatedActionSet evaluate(SectorEntityToken entity, GameContext ctx,
+                                              Map<String, MemoryAPI> memoryMap) {
+        StarloguePlugin plugin = getPlugin(entity, memoryMap);
         if (plugin == null) return new EvaluatedActionSet(new ArrayList<StarlogueAction>(), new ArrayList<StarlogueAction>());
 
         List<StarlogueAction> pool = new ArrayList<StarlogueAction>(plugin.getActions(ctx));
@@ -122,14 +143,16 @@ public class ConstraintEngine {
             Map<String, Object> fn = new LinkedHashMap<String, Object>();
             fn.put("name", action.getId());
             fn.put("description", action.getDescription());
-            fn.put("parameters", buildParamSchema(action.getParameters()));
+            fn.put("parameters", buildParamSchema(action.getParameters(), action.getParameterDescriptions()));
             tool.put("function", fn);
             tools.add(tool);
         }
         return tools;
     }
 
-    private static Map<String, Object> buildParamSchema(Map<String, Object> paramDefs) {
+    private static Map<String, Object> buildParamSchema(
+            Map<String, Object> paramDefs,
+            Map<String, String> descriptions) {
         Map<String, Object> schema = new LinkedHashMap<String, Object>();
         schema.put("type", "object");
         Map<String, Object> properties = new LinkedHashMap<String, Object>();
@@ -137,6 +160,10 @@ public class ConstraintEngine {
         for (Map.Entry<String, Object> e : paramDefs.entrySet()) {
             Map<String, Object> typeObj = new LinkedHashMap<String, Object>();
             typeObj.put("type", e.getValue());
+            String desc = descriptions.get(e.getKey());
+            if (desc != null && !desc.isEmpty()) {
+                typeObj.put("description", desc);
+            }
             properties.put(e.getKey(), typeObj);
             required.add(e.getKey());
         }

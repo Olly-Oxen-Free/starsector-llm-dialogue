@@ -1,7 +1,6 @@
 package starlogue.action.fleet;
 
 import com.fs.starfarer.api.Global;
-import com.fs.starfarer.api.campaign.RepLevel;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import lunalib.lunaSettings.LunaSettings;
 import starlogue.action.StarlogueAction;
@@ -39,16 +38,19 @@ public class AdjustFactionRelAction implements StarlogueAction {
         return p;
     }
 
+    @Override
+    public java.util.Map<String, String> getParameterDescriptions() {
+        java.util.Map<String, String> d = new java.util.LinkedHashMap<>();
+        d.put("delta", "Faction relationship change. Range: -0.08 to +0.08. Positive improves standing, negative worsens it. Use sparingly — this is a significant political act.");
+        d.put("reason", "Brief narrative reason for the shift (e.g. 'player defused a border dispute').");
+        return d;
+    }
+
     @Override public boolean isBluffable() { return false; }
 
     @Override
     public boolean isAvailable(GameContext ctx) {
-        if (ctx.repLevel == null || ctx.npcFaction == null) return false;
-        // Not available at extremes
-        if (!ctx.repLevel.isAtBest(RepLevel.FRIENDLY)) return false; // already COOPERATIVE
-        if (ctx.repLevel.isAtBest(RepLevel.VENGEFUL)) return false;
-        // Requires the NPC to be at least a Commander rank (narrative gate — the LLM enforces via prompt)
-        return true;
+        return ctx.repLevel != null && ctx.npcFaction != null && ctx.playerFaction != null;
     }
 
     @Override
@@ -65,10 +67,10 @@ public class AdjustFactionRelAction implements StarlogueAction {
         MemoryAPI playerMem = Global.getSector().getPlayerFleet().getMemory();
         float used = playerMem.contains(capKey) ? playerMem.getFloat(capKey) : 0f;
 
-        Float capFloat = isPositive
-            ? LunaSettings.getFloat("starlogue", "starlogue_rep_gain_cap")
-            : LunaSettings.getFloat("starlogue", "starlogue_rep_loss_cap");
-        float cap = capFloat != null ? capFloat : 20f;
+        Double capDbl = isPositive
+            ? LunaSettings.getDouble("starlogue", "starlogue_rep_gain_cap")
+            : LunaSettings.getDouble("starlogue", "starlogue_rep_loss_cap");
+        float cap = capDbl != null ? capDbl.floatValue() : 20f;
 
         float allowed = cap - Math.abs(used);
         if (allowed <= 0f) {
