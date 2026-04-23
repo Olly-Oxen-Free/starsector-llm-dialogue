@@ -2,21 +2,20 @@ package starlogue;
 
 import com.fs.starfarer.api.BaseModPlugin;
 import com.fs.starfarer.api.Global;
-import com.fs.starfarer.api.campaign.BaseCampaignEventListener;
-import com.fs.starfarer.api.campaign.InteractionDialogAPI;
-import com.fs.starfarer.api.campaign.OptionPanelAPI;
-import com.fs.starfarer.api.campaign.SectorEntityToken;
 import starlogue.api.StarlogueAPI;
-import starlogue.engine.ConstraintEngine;
+import starlogue.compat.nex.NexStarlogueCompat;
+import starlogue.config.StarlogueCredentials;
 import starlogue.personality.FactionProfileRegistry;
-import starlogue.provider.StarloguePlugin;
+import starlogue.ui.StarlogueOptionEnforcerScript;
 import org.apache.log4j.Logger;
 
 public class StarlogueModPlugin extends BaseModPlugin {
     private static final Logger log = Logger.getLogger(StarlogueModPlugin.class);
+    private static final String BUILD_MARKER = "cred-debug-2026-04-23-2";
 
     @Override
     public void onApplicationLoad() throws Exception {
+        StarlogueCredentials.ensureDefaultFileInCommon();
         FactionProfileRegistry.load();
         StarlogueAPI.markLoaded();
 
@@ -26,43 +25,22 @@ public class StarlogueModPlugin extends BaseModPlugin {
             log.info("Starlogue: Star Lords detected — StarLordPlugin registered");
         }
 
-        log.info("Starlogue v0.1.0 loaded");
+        if (Global.getSettings().getModManager().isModEnabled("nexerelin")) {
+            StarlogueAPI.registerActionContributor(new NexStarlogueCompat());
+            log.info("Starlogue: Nexerelin detected — soft compat tools registered");
+        }
+
+        log.info("Starlogue v0.1.0 loaded [" + BUILD_MARKER + "]");
     }
 
     @Override
     public void onGameLoad(boolean newGame) {
-        // Inject the Starlogue option whenever the player opens an interaction dialog.
-        // This handles fleet encounters and non-rules-driven custom plugin dialogs.
-        // Rules-driven dialogs (contacts, markets, bar NPCs) are covered by rules.csv →
-        // AddStarlogueOptionCmd, which re-adds the option on every PopulateOptions wave.
-        Global.getSector().addListener(new BaseCampaignEventListener(false) {
-            @Override
-            public void reportShownInteractionDialog(InteractionDialogAPI dialog) {
-                if (dialog == null) return;
-                SectorEntityToken target = dialog.getInteractionTarget();
-                if (target == null) return;
-                StarloguePlugin plugin = ConstraintEngine.getPlugin(target, null);
-                if (plugin == null) return;
-
-                OptionPanelAPI options = dialog.getOptionPanel();
-                if (options == null) return;
-
-                try {
-                    if (options.hasOption("starlogue_open")) return;
-                } catch (Throwable t) {
-                    // older API without hasOption — accept a cosmetic duplicate risk
-                }
-
-                String label;
-                try {
-                    label = plugin.getOptionLabel(target, null);
-                } catch (Exception e) {
-                    label = "Open a channel...";
-                }
-                if (label == null || label.isEmpty()) label = "Open a channel...";
-                options.addOption(label, "starlogue_open");
-            }
-        });
-        log.info("Starlogue: game listener registered");
+        // rules.csv (PopulateOptions → AddStarlogueOptionCmd) covers most screens.
+        // Some UIs (e.g. portside bar) never run PopulateOptions — add a throttled
+        // fallback that reuses the same insert logic (not reportShownInteractionDialog;
+        // see StarlogueOptionEnforcerScript) and skip refit-class plugins.
+        if (Global.getSector() != null) {
+            Global.getSector().addScript(new StarlogueOptionEnforcerScript());
+        }
     }
 }

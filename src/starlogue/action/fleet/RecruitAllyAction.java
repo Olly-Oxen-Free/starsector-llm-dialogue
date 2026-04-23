@@ -39,8 +39,9 @@ public class RecruitAllyAction implements StarlogueAction {
 
     @Override
     public boolean isAvailable(GameContext ctx) {
-        // Requires meaningful positive history
-        return ctx.memoryScore > 20f && !ctx.repLevel.isAtBest(RepLevel.NEUTRAL);
+        if (ctx.fleet == null || ctx.repLevel == null) return false;
+        // Require at least not actively hostile — you don't recruit enemies mid-standoff
+        return !ctx.repLevel.isAtBest(RepLevel.HOSTILE);
     }
 
     @Override
