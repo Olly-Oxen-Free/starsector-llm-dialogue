@@ -42,6 +42,7 @@ public class CeasefireAction implements StarlogueAction {
     public boolean isAvailable(GameContext ctx) {
         // Only when situation is tense enough to need a ceasefire
         // (not when already friendly, not when totally VENGEFUL)
+        if (ctx.repLevel == null) return false;
         return ctx.repLevel.isAtBest(RepLevel.NEUTRAL)
                 && !ctx.repLevel.isAtBest(RepLevel.VENGEFUL);
     }

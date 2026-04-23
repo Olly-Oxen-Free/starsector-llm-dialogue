@@ -43,7 +43,7 @@ public class TradeOfferAction implements StarlogueAction {
     @Override
     public boolean isAvailable(GameContext ctx) {
         // Need at least INHOSPITABLE standing to trade
-        return !ctx.repLevel.isAtBest(RepLevel.HOSTILE);
+        return ctx.repLevel == null || !ctx.repLevel.isAtBest(RepLevel.HOSTILE);
     }
 
     @Override

@@ -45,7 +45,7 @@ public class RansomCrewAction implements StarlogueAction {
         // Need crew in NPC cargo and at least minimal standing
         if (ctx.fleet == null) return false;
         return ctx.fleet.getCargo().getCrew() > 0
-                && !ctx.repLevel.isAtBest(RepLevel.VENGEFUL);
+                && (ctx.repLevel == null || !ctx.repLevel.isAtBest(RepLevel.VENGEFUL));
     }
 
     @Override

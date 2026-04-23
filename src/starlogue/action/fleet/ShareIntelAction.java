@@ -25,7 +25,7 @@ public class ShareIntelAction implements StarlogueAction {
     public String getDescription() {
         return "Share tactical or strategic intelligence with the player. "
              + "Provide an intelligence_report string: what you know about threats, "
-             + "fleet movements, or locations of interest in the system. "
+             + "fleet movements, nearby derelicts/stations, or other locations of interest in the system. "
              + "Only use when on reasonably good terms.";
     }
 
@@ -41,7 +41,8 @@ public class ShareIntelAction implements StarlogueAction {
     @Override
     public boolean isAvailable(GameContext ctx) {
         // Need positive memory or at least neutral reputation
-        return ctx.memoryScore > -10f && !ctx.repLevel.isAtBest(RepLevel.HOSTILE);
+        return ctx.memoryScore > -10f
+            && (ctx.repLevel == null || !ctx.repLevel.isAtBest(RepLevel.HOSTILE));
     }
 
     @Override

@@ -41,7 +41,8 @@ public class PayTributeAction implements StarlogueAction {
     @Override
     public boolean isAvailable(GameContext ctx) {
         // NPC pays only when player clearly stronger and NPC has enough rep not to be purely hostile
-        return ctx.strengthDelta < -0.20f && !ctx.repLevel.isAtBest(RepLevel.VENGEFUL);
+        return ctx.strengthDelta < -0.20f
+            && (ctx.repLevel == null || !ctx.repLevel.isAtBest(RepLevel.VENGEFUL));
     }
 
     @Override
