@@ -48,7 +48,15 @@ public class PersonalityComposer {
         String rank = person.getRank();
         boolean isAICore = person.getAICoreId() != null;
         String[] skillNotes = buildSkillNotes(person);
-        String base = composeFromParts(factionId, personality, rank, isAICore, skillNotes);
+        String base;
+        if (!FactionProfileRegistry.hasProfile(factionId) && ctx.npcFaction != null) {
+            // No handwritten profile and no contributor profile — build from live game data.
+            // Still apply personality/rank/skill notes on top of the live faction context.
+            String liveContext = starlogue.engine.FactionDescriptionHelper.buildFactionContext(ctx.npcFaction);
+            base = buildBaseFromLiveContext(liveContext, personality, rank, isAICore, skillNotes);
+        } else {
+            base = composeFromParts(factionId, personality, rank, isAICore, skillNotes);
+        }
 
         // Append registered PersonalityModifier contributions
         StringBuilder sb = new StringBuilder(base);
@@ -100,6 +108,43 @@ public class PersonalityComposer {
         }
 
         // Closing instruction
+        sb.append("Respond in 1-3 sentences. Do not break character. "
+                + "Do not describe your own actions in third person — speak directly.");
+
+        return sb.toString().trim();
+    }
+
+    /**
+     * Builds the personality baseline when no hand-authored profile exists.
+     * Uses the live faction description as the identity foundation, then applies
+     * the same personality/rank/skill/AI-core notes as composeFromParts.
+     */
+    private static String buildBaseFromLiveContext(String liveContext, String personality,
+                                                   String rank, boolean isAICore,
+                                                   String[] skillNotes) {
+        StringBuilder sb = new StringBuilder();
+        if (liveContext != null && !liveContext.isEmpty()) {
+            sb.append(liveContext).append(" ");
+        } else {
+            sb.append("You are a fleet commander operating in the Persean Sector. ");
+        }
+
+        String pNote = PERSONALITY_NOTES.get(personality);
+        if (pNote != null) sb.append(pNote);
+
+        String rNote = RANK_NOTES.get(rank);
+        if (rNote != null) sb.append(rNote);
+
+        for (String note : skillNotes) {
+            sb.append(note).append(" ");
+        }
+
+        if (isAICore) {
+            sb.append("You are an artificial intelligence. "
+                    + "You do not form emotional attachments. "
+                    + "You reason in probabilities. ");
+        }
+
         sb.append("Respond in 1-3 sentences. Do not break character. "
                 + "Do not describe your own actions in third person — speak directly.");
 

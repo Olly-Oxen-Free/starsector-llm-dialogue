@@ -45,6 +45,22 @@ public class FactionProfileRegistry {
         return FALLBACK;
     }
 
+    /**
+     * Returns {@code true} when a real (non-fallback) profile exists for this faction —
+     * either a built-in entry or one provided by a registered {@link FactionProfileContributor}.
+     * Returns {@code false} for unknown factions that would receive the generic fallback text.
+     */
+    public static boolean hasProfile(String factionId) {
+        if (factionId == null) return false;
+        if (profiles.containsKey(factionId)) return true;
+        for (FactionProfileContributor c : StarlogueAPI.getProfileContributors()) {
+            try {
+                if (c.getProfile(factionId) != null) return true;
+            } catch (Exception ignored) {}
+        }
+        return false;
+    }
+
     /** For unit testing — inject profiles without game API. */
     public static void putProfile(String factionId, FactionProfile profile) {
         profiles.put(factionId, profile);
