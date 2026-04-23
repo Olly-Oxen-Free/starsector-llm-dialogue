@@ -58,7 +58,8 @@ public class CeasefireAction implements StarlogueAction {
             ctx.fleet.setNoEngaging(days);
         }
         MemoryEngine.recordEvent(ctx.person, MemoryEvent.DEESCALATED, 1.0f);
-        log.debug("Starlogue: ceasefire " + (int) days + " days with " + ctx.person.getNameString());
+        log.debug("Starlogue: ceasefire " + (int) days + " days with "
+            + (ctx.person != null ? ctx.person.getNameString() : "unknown"));
     }
 
     @Override

@@ -65,7 +65,10 @@ public class TradeOfferAction implements StarlogueAction {
         float totalCost = qty * pricePerUnit;
 
         CargoAPI npcCargo = ctx.fleet.getCargo();
-        CargoAPI playerCargo = Global.getSector().getPlayerFleet().getCargo();
+        com.fs.starfarer.api.campaign.CampaignFleetAPI pf =
+            Global.getSector() != null ? Global.getSector().getPlayerFleet() : null;
+        if (pf == null) return;
+        CargoAPI playerCargo = pf.getCargo();
 
         // Check NPC has enough commodity
         float npcQty = npcCargo.getCommodityQuantity(commodityId);

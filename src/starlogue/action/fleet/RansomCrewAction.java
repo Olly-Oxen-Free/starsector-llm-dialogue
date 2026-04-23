@@ -61,7 +61,10 @@ public class RansomCrewAction implements StarlogueAction {
         if (amtObj instanceof Number) amount = ((Number) amtObj).floatValue();
 
         CargoAPI npcCargo = ctx.fleet.getCargo();
-        CargoAPI playerCargo = Global.getSector().getPlayerFleet().getCargo();
+        com.fs.starfarer.api.campaign.CampaignFleetAPI pf =
+            Global.getSector() != null ? Global.getSector().getPlayerFleet() : null;
+        if (pf == null) return;
+        CargoAPI playerCargo = pf.getCargo();
 
         int npcCrew = npcCargo.getCrew();
         int transfer = Math.min(crewCount, npcCrew);

@@ -42,11 +42,17 @@ public class ExtortAction implements StarlogueAction {
 
     @Override
     public void execute(GameContext ctx, Map<String, Object> args) {
-        double raw = ((Number) args.get("credits")).doubleValue();
-        float playerCredits = Global.getSector().getPlayerFleet().getCargo().getCredits().get();
-        // Clamp: at most 10% of player credits, between 1000 and 200000
+        Object creditsObj = args.get("credits");
+        if (!(creditsObj instanceof Number)) return;
+        double raw = ((Number) creditsObj).doubleValue();
+
+        com.fs.starfarer.api.campaign.CampaignFleetAPI pf =
+            Global.getSector() != null ? Global.getSector().getPlayerFleet() : null;
+        if (pf == null) return;
+
+        float playerCredits = pf.getCargo().getCredits().get();
         float clamped = Math.max(1000f, Math.min((float) raw, Math.min(200000f, playerCredits * 0.10f)));
-        Global.getSector().getPlayerFleet().getCargo().getCredits().add(-clamped);
+        pf.getCargo().getCredits().add(-clamped);
 
         MemoryEngine.recordEvent(ctx.person, MemoryEvent.EXTORTED, 1.0f);
         log.info("Starlogue: extort — player paid " + clamped + " credits");

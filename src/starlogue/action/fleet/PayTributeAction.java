@@ -64,8 +64,10 @@ public class PayTributeAction implements StarlogueAction {
         }
 
         npcCargo.getCredits().add(-actual);
-        CargoAPI playerCargo = Global.getSector().getPlayerFleet().getCargo();
-        playerCargo.getCredits().add(actual);
+        com.fs.starfarer.api.campaign.CampaignFleetAPI pf =
+            Global.getSector() != null ? Global.getSector().getPlayerFleet() : null;
+        if (pf == null) return;
+        pf.getCargo().getCredits().add(actual);
 
         MemoryEngine.recordEvent(ctx.person, MemoryEvent.DEESCALATED, 0.5f);
         log.debug("Starlogue: pay_tribute " + (int) actual + " credits from " + ctx.person.getNameString());

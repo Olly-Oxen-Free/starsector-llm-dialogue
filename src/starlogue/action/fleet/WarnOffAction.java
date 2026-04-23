@@ -46,7 +46,7 @@ public class WarnOffAction implements StarlogueAction {
             ctx.fleet.setNoEngaging(2f);
         }
         MemoryEngine.recordEvent(ctx.person, MemoryEvent.OFFENDED, 1.0f);
-        log.debug("Starlogue: warn_off executed by " + ctx.person.getNameString());
+        log.debug("Starlogue: warn_off executed by " + (ctx.person != null ? ctx.person.getNameString() : "unknown"));
     }
 
     @Override
