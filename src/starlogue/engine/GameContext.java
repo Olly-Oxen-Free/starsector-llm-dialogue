@@ -36,6 +36,8 @@ public class GameContext {
 
     // Tier flags
     public boolean isStarLord = false;
+    /** Bar event mission archetype ID (e.g. "smug", "cheapCom"). Null for non-bar interactions. */
+    public String archetypeId = null;
     public boolean isNexerelinFactionLeader = false;
     public Object lordData = null;
     public Object nexerelinContext = null;
@@ -43,6 +45,13 @@ public class GameContext {
     // Rate-limit state (from player fleet memory)
     public float repGained30d;
     public float repLost30d;
+
+    /** Player transponder at conversation start (best-effort). */
+    public boolean playerTransponderOn = true;
+    /** 0..1 heuristic: hull owner factions vs official player faction. */
+    public float fleetSignatureMismatchHint = 0f;
+    /** Compact hull-style summary for disguise / mismatch prompts. */
+    public String fleetSignatureSummary;
 
     // Extra context notes from registered ContextModifiers (injected into [SITUATION] block)
     public List<String> contextNotes = new ArrayList<String>();

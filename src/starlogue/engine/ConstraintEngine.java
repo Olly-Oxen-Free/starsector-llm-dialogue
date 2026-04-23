@@ -79,6 +79,24 @@ public class ConstraintEngine {
                 log.error("Starlogue: ContextModifier from mod '" + mod.getModId() + "' threw", e);
             }
         }
+
+        // Extract bar event archetype ID from rules memory if present
+        if (memoryMap != null && ctx.archetypeId == null) {
+            outer:
+            for (com.fs.starfarer.api.campaign.rules.MemoryAPI bag : memoryMap.values()) {
+                if (bag == null) continue;
+                try {
+                    if (bag.contains("$missionId")) {
+                        Object mid = bag.get("$missionId");
+                        if (mid instanceof String && !((String) mid).isEmpty()) {
+                            ctx.archetypeId = (String) mid;
+                            break outer;
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+
         return ctx;
     }
 

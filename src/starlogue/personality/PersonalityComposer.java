@@ -52,10 +52,13 @@ public class PersonalityComposer {
 
         // Character profile has highest priority — check before faction profile
         CharacterProfile charProfile = CharacterProfileRegistry.getProfile(person, factionId);
+        CharacterProfile archetypeProfile = CharacterProfileRegistry.getArchetypeProfile(ctx.archetypeId);
 
         String base;
         if (charProfile != null) {
             base = buildBaseFromProfile(charProfile.baseline, personality, rank, isAICore, skillNotes);
+        } else if (archetypeProfile != null) {
+            base = buildBaseFromProfile(archetypeProfile.baseline, personality, rank, isAICore, skillNotes);
         } else if (!FactionProfileRegistry.hasProfile(factionId) && ctx.npcFaction != null) {
             // No handwritten profile and no contributor profile — build from live game data.
             // Still apply personality/rank/skill notes on top of the live faction context.
