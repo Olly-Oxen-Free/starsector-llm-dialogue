@@ -40,6 +40,8 @@ public final class StarlogueAPI {
     private static final List<PersonalityModifier>       personalityModifiers = new ArrayList<PersonalityModifier>();
     private static final List<ActionContributor>         actionContributors  = new ArrayList<ActionContributor>();
     private static final List<FactionProfileContributor> profileContributors = new ArrayList<FactionProfileContributor>();
+    private static final java.util.List<CharacterProfileContributor> characterProfileContributors
+        = new java.util.ArrayList<CharacterProfileContributor>();
     // Full NPC-tier plugins (checked before built-in FleetCaptainPlugin)
     private static final List<starlogue.provider.StarloguePlugin> plugins = new ArrayList<starlogue.provider.StarloguePlugin>();
 
@@ -80,6 +82,16 @@ public final class StarlogueAPI {
         if (c == null) return;
         profileContributors.add(c);
         log.info("Starlogue: registered FactionProfileContributor from mod '" + c.getModId() + "'");
+    }
+
+    public static void registerCharacterProfile(CharacterProfileContributor c) {
+        if (c == null) return;
+        characterProfileContributors.add(c);
+        log.info("Starlogue: registered CharacterProfileContributor from mod '" + c.getModId() + "'");
+    }
+
+    public static java.util.List<CharacterProfileContributor> getCharacterProfileContributors() {
+        return java.util.Collections.unmodifiableList(characterProfileContributors);
     }
 
     /**

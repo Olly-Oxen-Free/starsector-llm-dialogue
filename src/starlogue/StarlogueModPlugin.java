@@ -5,6 +5,7 @@ import com.fs.starfarer.api.Global;
 import starlogue.api.StarlogueAPI;
 import starlogue.compat.nex.NexStarlogueCompat;
 import starlogue.config.StarlogueCredentials;
+import starlogue.personality.CharacterProfileRegistry;
 import starlogue.personality.FactionProfileRegistry;
 import starlogue.ui.StarlogueOptionEnforcerScript;
 import org.apache.log4j.Logger;
@@ -17,6 +18,7 @@ public class StarlogueModPlugin extends BaseModPlugin {
     public void onApplicationLoad() throws Exception {
         StarlogueCredentials.ensureDefaultFileInCommon();
         FactionProfileRegistry.load();
+        CharacterProfileRegistry.load();
         StarlogueAPI.markLoaded();
 
         if (Global.getSettings().getModManager().isModEnabled("starlords")) {
