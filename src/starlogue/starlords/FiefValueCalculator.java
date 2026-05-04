@@ -5,13 +5,10 @@ import com.fs.starfarer.api.campaign.CargoAPI;
 import com.fs.starfarer.api.campaign.SectorEntityToken;
 import com.fs.starfarer.api.campaign.econ.MarketAPI;
 import com.fs.starfarer.api.fleet.FleetMemberAPI;
+import starlogue.engine.FleetSnapshotFormatter;
 import starlords.controllers.FiefController;
 import starlords.person.Lord;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -129,32 +126,9 @@ public final class FiefValueCalculator {
      */
     public static String buildFleetNote(CampaignFleetAPI fleet, int maxShips) {
         if (fleet == null) return null;
-        List<FleetMemberAPI> members = fleet.getFleetData().getMembersListCopy();
-        List<FleetMemberAPI> eligible = new ArrayList<FleetMemberAPI>();
-        for (FleetMemberAPI m : members) {
-            if (m.isFlagship() || m.isStation()) continue;
-            if (m.getDeploymentPointsCost() < 5f) continue;
-            eligible.add(m);
-        }
-        Collections.sort(eligible, new Comparator<FleetMemberAPI>() {
-            public int compare(FleetMemberAPI a, FleetMemberAPI b) {
-                return Float.compare(b.getDeploymentPointsCost(), a.getDeploymentPointsCost());
-            }
-        });
-        if (eligible.isEmpty()) return null;
-        StringBuilder sb = new StringBuilder("Player fleet ships (lord could request as payment): ");
-        int count = 0;
-        for (FleetMemberAPI m : eligible) {
-            if (count >= maxShips) { sb.append("..."); break; }
-            float value = estimateShipValue(m);
-            sb.append('"').append(m.getShipName()).append("\" (")
-              .append(m.getHullId()).append(", ")
-              .append((int) m.getDeploymentPointsCost()).append(" DP, ~")
-              .append(formatK(value)).append("cr)");
-            if (count < eligible.size() - 1 && count < maxShips - 1) sb.append("; ");
-            count++;
-        }
-        return sb.toString();
+        String brief = FleetSnapshotFormatter.formatFleetBrief(fleet, maxShips);
+        if (brief == null || brief.isEmpty() || "(no fleet)".equals(brief)) return null;
+        return "Player fleet (line-of-sight summary — lord may request ships as payment): " + brief;
     }
 
     /**

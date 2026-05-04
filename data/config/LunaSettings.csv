@@ -1,24 +1,27 @@
 fieldID,fieldName,fieldType,defaultValue,secondaryValue,fieldDescription,minValue,maxValue,tab
 ,,,,,,,,
 starlogue_backendHeader,LLM Backend,Header,LLM Backend,,,,,Backend
-starlogue_provider,Backend Provider,String,openai_compatible,,"One of: openai_compatible or anthropic. OpenAI-compatible covers Ollama, LM Studio, OpenAI, and OpenRouter.",,,Backend
-starlogue_endpoint,API Endpoint,String,http://localhost:11434/v1,,"Full base URL for the LLM backend. For Ollama: http://localhost:11434/v1",,,Backend
-starlogue_api_key,API Key,String,,,"API key for remote backends. Leave empty for local backends (Ollama, LM Studio).",,,Backend
-starlogue_model,Model Name,String,mistral,,"Model identifier passed to the backend. E.g. mistral, llama3.2, claude-sonnet-4-6.",,,Backend
-starlogue_temperature,Temperature,Float,0.8,,"LLM sampling temperature. 0.7-0.9 recommended for roleplay.",0.0,2.0,Backend
+starlogue_credentials_help,Credentials File (required),Text,"LLM provider, API key, model, and custom endpoint are configured ONLY via saves/common/Starlogue_credentials.json. Luna does not provide backend override fields anymore. Use keys: starlogue_provider, starlogue_api_key, starlogue_model, starlogue_endpoint. Template: data/config/starlogue/credentials.example.json.",,"Edit saves/common/Starlogue_credentials.json",,,Backend
+starlogue_temperature,Temperature,Double,0.8,,"LLM sampling temperature. 0.7-0.9 recommended for roleplay.",0.0,2.0,Backend
 starlogue_max_tokens,Max Response Tokens,Int,300,,"Maximum tokens per LLM response. Keep low for faster local inference.",50,1000,Backend
 ,,,,,,,,
 starlogue_historyHeader,Conversation History,Header,Conversation History,,,,,History
 starlogue_history_turns,History Turns Before Flush,Int,10,,"Number of back-and-forth turns retained in the LLM context window.",1,50,History
-starlogue_history_budget,History Token Budget,Float,0.6,,"Fraction of max_tokens budget allocated to history.",0.1,0.9,History
+starlogue_history_budget,History Token Budget,Double,0.6,,"Fraction of max_tokens budget allocated to history.",0.1,0.9,History
 ,,,,,,,,
 starlogue_memoryHeader,Memory and Decay,Header,Memory and Decay,,,,,Memory
-starlogue_decay_multiplier,Memory Decay Multiplier,Float,1.0,,"Scales all memory event TTLs. 0.5 = decay twice as fast. 2.0 = linger twice as long.",0.25,4.0,Memory
+starlogue_decay_multiplier,Memory Decay Multiplier,Double,1.0,,"Scales all memory event TTLs. 0.5 = decay twice as fast. 2.0 = linger twice as long.",0.25,4.0,Memory
 ,,,,,,,,
 starlogue_repHeader,Reputation Limits,Header,Reputation Limits,,,,,Reputation
-starlogue_rep_gain_cap,Monthly Rep Gain Cap,Float,20.0,,"Maximum reputation points gainable via Starlogue per 30 in-game day window.",0.0,100.0,Reputation
-starlogue_rep_loss_cap,Monthly Rep Loss Cap,Float,20.0,,"Maximum reputation points loseable via Starlogue per 30 in-game day window.",0.0,100.0,Reputation
+starlogue_rep_gain_cap,Monthly Rep Gain Cap,Double,20.0,,"Maximum reputation points gainable via Starlogue per 30 in-game day window.",0.0,100.0,Reputation
+starlogue_rep_loss_cap,Monthly Rep Loss Cap,Double,20.0,,"Maximum reputation points loseable via Starlogue per 30 in-game day window.",0.0,100.0,Reputation
 ,,,,,,,,
 starlogue_debugHeader,Debug,Header,Debug,,,,,Debug
 starlogue_debug_prompts,Log System Prompts,Boolean,false,,"Write full system prompts to starsector.log at DEBUG level.",,,Debug
 starlogue_debug_tools,Log Tool Calls,Boolean,false,,"Write all LLM tool calls and execution results to starsector.log.",,,Debug
+,,,,,,,,
+starlogue_auditHeader,Conversation Audit,Header,Conversation Audit,,,,,Debug
+starlogue_audit_conversation_log,Write NDJSON Conversation Log,Boolean,false,,"When enabled, append conversation + tool events to saves/common/Starlogue_conversations.ndjson (and fallbacks).",,,Debug
+starlogue_audit_include_thinking,Audit Log Model Thinking,Boolean,false,,"When enabled and conversation log is on, record provider-native reasoning/thinking blocks when the API returns them.",,,Debug
+starlogue_audit_include_raw_llm,Audit Log LLM Metadata,Boolean,false,,"When enabled and conversation log is on, record redacted request/response metadata (no API keys; truncated).",,,Debug
+starlogue_fleet_sight_max_ships,Fleet Snapshot Max Ships,Int,10,,"Max ships listed per side in VISUAL_SIGHTING_REPORT and inspect_fleet brief.",1,40,Debug

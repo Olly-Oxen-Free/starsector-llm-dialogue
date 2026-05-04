@@ -2,6 +2,7 @@ package starlogue.provider;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.*;
+import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import com.fs.starfarer.api.characters.PersonAPI;
 import starlogue.action.StarlogueAction;
 import starlogue.action.fleet.*;
@@ -10,6 +11,7 @@ import starlogue.memory.MemoryEngine;
 import starlogue.personality.PersonalityComposer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public class FleetCaptainPlugin implements StarloguePlugin {
 
@@ -61,6 +63,8 @@ public class FleetCaptainPlugin implements StarloguePlugin {
                 ? playerMem.getFloat("$starlogue_rep_lost_30d") : 0f;
         }
 
+        starlogue.engine.FleetContextHelper.enrichPlayerSide(ctx);
+
         return ctx;
     }
 
@@ -76,6 +80,9 @@ public class FleetCaptainPlugin implements StarloguePlugin {
         actions.add(new ExtortAction());
         actions.add(new PayTributeAction());
         actions.add(new TradeOfferAction());
+        actions.add(new TransferCreditsAction());
+        actions.add(new TransferSuppliesAction());
+        actions.add(new TransferFuelAction());
         actions.add(new RansomCrewAction());
         // Diplomatic
         actions.add(new ShareIntelAction());
@@ -84,11 +91,41 @@ public class FleetCaptainPlugin implements StarloguePlugin {
         // Relationship
         actions.add(new AdjustIndividualRelAction());
         actions.add(new AdjustFactionRelAction());
+        actions.add(new InspectFleetAction());
+        actions.add(new InspectShipDetailAction());
+        actions.add(new BluffIdentityAction());
+        actions.add(new ChallengeDisguiseAction());
+        actions.add(new ExposeInconsistencyAction());
+        actions.add(new IntelShareTipAction());
+        actions.add(new IntelMarkMemoryAction());
+        actions.add(new PersonSetNoteAction());
+        actions.add(new FleetEscortPlayerAction());
+        actions.add(new FleetPatrolHereAction());
+        actions.add(new FleetDisengageSoftAction());
+        actions.add(new FleetHarassAction());
+        actions.add(new TransferMarinesAction());
+        actions.add(new TransferCommodityBundleAction());
+        actions.add(new GetFactionInfoAction());
         return actions;
     }
 
     @Override
     public String getSystemPromptPreamble(GameContext ctx) {
         return PersonalityComposer.compose(ctx);
+    }
+
+    @Override
+    public String getOptionLabel(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
+        if (!(entity instanceof CampaignFleetAPI)) {
+            return "Hail the fleet...";
+        }
+        CampaignFleetAPI f = (CampaignFleetAPI) entity;
+        FactionAPI fac = f.getFaction();
+        String n = "unknown";
+        if (fac != null) {
+            n = fac.getDisplayName();
+            if (n == null || n.isEmpty()) n = fac.getId();
+        }
+        return "Hail the " + n + " fleet...";
     }
 }

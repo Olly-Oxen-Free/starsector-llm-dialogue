@@ -33,4 +33,13 @@ public interface StarloguePlugin {
     default String getOptionLabel(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
         return "Open a channel...";
     }
+
+    /**
+     * Dialog option id that the rules engine (and our {@code DialogOptionSelected}
+     * rule) will see when the player clicks this option. Defaults to
+     * {@code starlogue_open} — direct LLM handoff. Override for rare UI routing only.
+     */
+    default String getOptionId(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
+        return "starlogue_open";
+    }
 }

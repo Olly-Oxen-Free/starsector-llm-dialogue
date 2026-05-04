@@ -11,7 +11,14 @@ import com.fs.starfarer.api.impl.campaign.ids.Factions;
 import starlogue.action.StarlogueAction;
 import starlogue.action.fleet.AdjustFactionRelAction;
 import starlogue.action.fleet.AdjustIndividualRelAction;
+import starlogue.action.fleet.GetFactionInfoAction;
+import starlogue.action.fleet.InspectFleetAction;
+import starlogue.action.fleet.InspectShipDetailAction;
+import starlogue.action.fleet.IntelMarkMemoryAction;
+import starlogue.action.fleet.IntelShareTipAction;
+import starlogue.action.fleet.PersonSetNoteAction;
 import starlogue.action.fleet.ShareIntelAction;
+import starlogue.engine.FleetContextHelper;
 import starlogue.engine.GameContext;
 import starlogue.memory.MemoryEngine;
 import starlogue.personality.PersonalityComposer;
@@ -35,7 +42,12 @@ public class PersonInteractionPlugin implements StarloguePlugin {
 
     @Override
     public boolean canEngage(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
-        return resolvePerson(entity, memoryMap) != null;
+        PersonAPI p = resolvePerson(entity, memoryMap);
+        if (p == null) return false;
+        // Don't duplicate a Starlogue "open channel" to the colony admin when the player
+        // already has peacetime comm / market access.
+        if (isFriendlyColonyAdminForSameTarget(p, entity)) return false;
+        return true;
     }
 
     @Override
@@ -82,6 +94,8 @@ public class PersonInteractionPlugin implements StarloguePlugin {
                 ? playerMem.getFloat("$starlogue_rep_lost_30d") : 0f;
         }
 
+        FleetContextHelper.enrichPlayerSide(ctx);
+
         return ctx;
     }
 
@@ -91,8 +105,14 @@ public class PersonInteractionPlugin implements StarloguePlugin {
         // Keep relationship adjustments + intel sharing which are thematic for a conversation.
         List<StarlogueAction> actions = new ArrayList<StarlogueAction>();
         actions.add(new ShareIntelAction());
+        actions.add(new IntelShareTipAction());
+        actions.add(new IntelMarkMemoryAction());
+        actions.add(new InspectFleetAction());
+        actions.add(new InspectShipDetailAction());
+        actions.add(new PersonSetNoteAction());
         actions.add(new AdjustIndividualRelAction());
         actions.add(new AdjustFactionRelAction());
+        actions.add(new GetFactionInfoAction());
         return actions;
     }
 
@@ -104,6 +124,17 @@ public class PersonInteractionPlugin implements StarloguePlugin {
     @Override
     public String getOptionLabel(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
         return "Open a channel...";
+    }
+
+    private static boolean isFriendlyColonyAdminForSameTarget(PersonAPI person, SectorEntityToken entity) {
+        if (entity == null) return false;
+        MarketAPI m = entity.getMarket();
+        if (m == null || m.getAdmin() == null) return false;
+        if (m.getAdmin() != person) return false;
+        FactionAPI pl = Global.getSector().getPlayerFaction();
+        FactionAPI owner = m.getFaction();
+        if (pl == null || owner == null) return false;
+        return !owner.isHostileTo(pl);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
@@ -121,6 +152,10 @@ public class PersonInteractionPlugin implements StarloguePlugin {
             if (p != null) return p;
             p = extractPerson(memoryMap.get("global"));
             if (p != null) return p;
+            for (MemoryAPI bag : memoryMap.values()) {
+                p = extractPerson(bag);
+                if (p != null) return p;
+            }
         }
         if (entity != null) {
             PersonAPI p = extractPerson(entity.getMemoryWithoutUpdate());
@@ -130,9 +165,21 @@ public class PersonInteractionPlugin implements StarloguePlugin {
     }
 
     private static PersonAPI extractPerson(MemoryAPI mem) {
-        if (mem == null || !mem.contains("$person")) return null;
-        Object v = mem.get("$person");
-        return v instanceof PersonAPI ? (PersonAPI) v : null;
+        if (mem == null) return null;
+        if (mem.contains("$person")) {
+            Object v = mem.get("$person");
+            if (v instanceof PersonAPI) return (PersonAPI) v;
+        }
+        // Some Nex / directory / custom dialogs stash the contact under alternate keys.
+        String[] altKeys = new String[] {
+            "$contactPerson", "$activePerson", "$talkingPerson", "$commPerson", "$barPerson"
+        };
+        for (String k : altKeys) {
+            if (!mem.contains(k)) continue;
+            Object v = mem.get(k);
+            if (v instanceof PersonAPI) return (PersonAPI) v;
+        }
+        return null;
     }
 
     private static FactionAPI resolveFaction(PersonAPI person, SectorEntityToken entity) {

@@ -10,7 +10,10 @@ public class ToolCallParserTest {
         testSingleToolCall();
         testNoToolCalls();
         testMultipleToolCalls();
+        testMalformedToolArgumentsStillParsesCalls();
         testNullContent();
+        testOpenAIReasoningField();
+        testAnthropicThinkingBlocks();
         System.out.println("ToolCallParserTest: ALL PASSED");
     }
 
@@ -46,5 +49,37 @@ public class ToolCallParserTest {
         String json = "{\"choices\":[{\"message\":{\"tool_calls\":[]}}]}";
         String content = ToolCallParser.parseContent(new JSONObject(json));
         assert content == null || content.isEmpty() : "Expected null/empty content";
+    }
+
+    static void testMalformedToolArgumentsStillParsesCalls() throws Exception {
+        String json = "{\"choices\":[{\"message\":{\"content\":\"Executing actions\",\"tool_calls\":[" +
+            "{\"function\":{\"name\":\"transfer_supplies\",\"arguments\":\"{not-valid-json}\"}}," +
+            "{\"function\":{\"name\":\"retreat\",\"arguments\":\"{\\\"reason\\\":\\\"mission complete\\\"}\"}}]}}]}";
+        List<LLMToolCall> calls = ToolCallParser.parseOpenAI(new JSONObject(json));
+        assert calls.size() == 2 : "Expected 2 calls despite malformed first args, got " + calls.size();
+        assert "transfer_supplies".equals(calls.get(0).toolId) : "Expected first tool transfer_supplies";
+        assert calls.get(0).args.isEmpty() : "Malformed arguments should map to empty args";
+        assert "retreat".equals(calls.get(1).toolId) : "Expected second tool retreat";
+        assert "mission complete".equals(calls.get(1).args.get("reason")) : "Expected retreat reason parsed";
+    }
+
+    static void testOpenAIReasoningField() throws Exception {
+        String json = "{\"choices\":[{\"message\":{"
+            + "\"content\":\"ok\","
+            + "\"reasoning\":\"step A then B\""
+            + "}}]}";
+        String r = ToolCallParser.parseOpenAIReasoning(new JSONObject(json));
+        assert "step A then B".equals(r) : "Expected reasoning parsed, got " + r;
+        String u = ToolCallParser.parseOpenAIUsageSummary(new JSONObject(
+            "{\"choices\":[{\"message\":{\"content\":\"x\"}}],\"usage\":{\"total_tokens\":42}}"));
+        assert u != null && u.contains("42") : "Expected usage string, got " + u;
+    }
+
+    static void testAnthropicThinkingBlocks() throws Exception {
+        String json = "{\"content\":["
+            + "{\"type\":\"thinking\",\"thinking\":\"plan\"},"
+            + "{\"type\":\"text\",\"text\":\"hello\"}]}";
+        String t = ToolCallParser.parseAnthropicThinking(new JSONObject(json));
+        assert "plan".equals(t) : "Expected thinking joined, got " + t;
     }
 }

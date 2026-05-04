@@ -11,7 +11,7 @@ echo "=== Starlogue Build ==="
 rm -rf "$CLASSES_DIR"
 mkdir -p "$CLASSES_DIR"
 
-CLASSPATH="$GAME/starfarer.api.jar:$GAME/log4j-1.2.9.jar:$GAME/json.jar:$GAME/mods/LunaLib-2.0.5/jars/LunaLib.jar:$GAME/mods/Star Lords-0.3.70/jars/StarLords.jar"
+CLASSPATH="$GAME/starfarer.api.jar:$GAME/lwjgl.jar:$GAME/log4j-1.2.9.jar:$GAME/json.jar:$GAME/mods/LunaLib-2.0.5/jars/LunaLib.jar:$GAME/mods/Star Lords-0.3.70/jars/StarLords.jar"
 
 find "$MOD_DIR/src" -name "*.java" > /tmp/starlogue_sources.txt
 echo "Compiling $(wc -l < /tmp/starlogue_sources.txt) source files..."

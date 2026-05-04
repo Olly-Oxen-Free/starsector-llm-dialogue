@@ -20,8 +20,9 @@ import java.util.*;
  *   <li>Response content is a typed block array, not a choices structure.</li>
  * </ul>
  *
- * <p>Configure via LunaLib: set {@code starlogue_provider} to {@code anthropic}
- * and {@code starlogue_api_key} to your Anthropic key.
+ * <p>Configure via {@code saves/common/Starlogue_credentials.json}: set
+ * {@code starlogue_provider} to {@code anthropic} and {@code starlogue_api_key}
+ * to your Anthropic key.
  * {@code starlogue_model} should be a valid Anthropic model ID
  * (e.g. {@code claude-sonnet-4-6}).
  */
@@ -68,7 +69,8 @@ public class AnthropicClient implements LLMClient {
         JSONObject root = new JSONObject(response.body());
         String content = ToolCallParser.parseAnthropicContent(root);
         List<LLMToolCall> toolCalls = ToolCallParser.parseAnthropicToolCalls(root);
-        return new LLMResponse(content, toolCalls);
+        String thinking = ToolCallParser.parseAnthropicThinking(root);
+        return new LLMResponse(content, toolCalls, thinking, null);
     }
 
     private JSONObject buildRequestBody(LLMRequest request) throws org.json.JSONException {

@@ -23,10 +23,19 @@ public class OpenAIClient implements LLMClient {
         String url = baseUrl.trim();
         if (url.endsWith("/")) url = url.substring(0, url.length() - 1);
         this.endpoint = url.endsWith("/chat/completions") ? url : url + "/chat/completions";
-        this.apiKey = apiKey;
+        this.apiKey = apiKey == null ? "" : apiKey.trim();
         this.http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
+    }
+
+    /**
+     * Subclass hook for provider-specific HTTP headers (e.g. OpenRouter's
+     * HTTP-Referer / X-Title attribution pair). Default: no extras.
+     * Returned entries are added verbatim before the request is sent.
+     */
+    protected Map<String, String> extraHeaders() {
+        return Collections.emptyMap();
     }
 
     @Override
@@ -43,20 +52,70 @@ public class OpenAIClient implements LLMClient {
             builder.header("Authorization", "Bearer " + apiKey);
         }
 
+        Map<String, String> extras = extraHeaders();
+        if (extras != null) {
+            for (Map.Entry<String, String> e : extras.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null) {
+                    builder.header(e.getKey(), e.getValue());
+                }
+            }
+        }
+
         log.debug("Starlogue → LLM endpoint: " + endpoint);
 
         HttpResponse<String> response = http.send(builder.build(),
                                                   HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
-            throw new RuntimeException("LLM backend returned HTTP " + response.statusCode()
-                + ": " + response.body());
+            String responseText = response.body();
+            String msg = responseText;
+            String providerName = null;
+            String providerRaw = null;
+            try {
+                JSONObject errRoot = new JSONObject(responseText);
+                if (errRoot.has("error")) {
+                    Object err = errRoot.get("error");
+                    if (err instanceof JSONObject) {
+                        JSONObject errObj = (JSONObject) err;
+                        String m = errObj.optString("message", null);
+                        if (m != null && !m.isEmpty()) {
+                            msg = m;
+                        }
+                        Object metadataObj = errObj.opt("metadata");
+                        if (metadataObj instanceof JSONObject) {
+                            JSONObject meta = (JSONObject) metadataObj;
+                            providerName = meta.optString("provider_name", null);
+                            providerRaw = meta.optString("raw", null);
+                        }
+                    } else {
+                        String m = errRoot.optString("error", null);
+                        if (m != null && !m.isEmpty() && m.length() < 500) {
+                            msg = m;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) { }
+            StringBuilder detail = new StringBuilder();
+            if (providerName != null && !providerName.isEmpty()) {
+                detail.append(" [provider=").append(providerName).append("]");
+            }
+            if (providerRaw != null && !providerRaw.isEmpty()) {
+                String raw = providerRaw.trim();
+                if (raw.length() > 220) raw = raw.substring(0, 220) + "...";
+                detail.append(" [providerRaw=").append(raw).append("]");
+            }
+            throw new RuntimeException("LLM backend returned HTTP " + response.statusCode() + ": " + msg + detail
+                + (msg.toLowerCase().contains("not found")
+                    ? " (if using Ollama, run: ollama pull <model> for the model name in Luna or Starlogue_credentials.json)"
+                    : ""));
         }
 
         JSONObject root = new JSONObject(response.body());
         String content = ToolCallParser.parseContent(root);
         List<LLMToolCall> toolCalls = ToolCallParser.parseOpenAI(root);
-        return new LLMResponse(content, toolCalls);
+        String reasoning = ToolCallParser.parseOpenAIReasoning(root);
+        String usage = ToolCallParser.parseOpenAIUsageSummary(root);
+        return new LLMResponse(content, toolCalls, reasoning, usage);
     }
 
     private JSONObject buildRequestBody(LLMRequest request) throws org.json.JSONException {

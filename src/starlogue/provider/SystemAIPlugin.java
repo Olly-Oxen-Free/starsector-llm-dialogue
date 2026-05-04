@@ -4,6 +4,7 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.FactionAPI;
 import com.fs.starfarer.api.campaign.RepLevel;
 import com.fs.starfarer.api.campaign.SectorEntityToken;
+import com.fs.starfarer.api.campaign.econ.MarketAPI;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import com.fs.starfarer.api.impl.campaign.ids.Factions;
 import com.fs.starfarer.api.impl.campaign.ids.Tags;
@@ -23,12 +24,20 @@ public class SystemAIPlugin implements StarloguePlugin {
 
     @Override
     public boolean canEngage(SectorEntityToken entity) {
-        return entity != null;
+        return canEngage(entity, null);
     }
 
     @Override
     public boolean canEngage(SectorEntityToken entity, Map<String, MemoryAPI> memoryMap) {
-        return entity != null;
+        if (entity == null) return false;
+        // If a live market exists and the player is not hostile to it, MarketDirectory / comms
+        // already cover "talk to this place" — skip the generic automated-voice fallback.
+        MarketAPI m = entity.getMarket();
+        if (m != null && m.getFaction() != null && m.getSize() > 0) {
+            FactionAPI pl = Global.getSector().getPlayerFaction();
+            if (pl != null && !m.getFaction().isHostileTo(pl)) return false;
+        }
+        return true;
     }
 
     @Override
