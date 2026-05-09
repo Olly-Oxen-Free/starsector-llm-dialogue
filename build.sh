@@ -16,8 +16,9 @@ CLASSPATH="$GAME/starfarer.api.jar:$GAME/lwjgl.jar:$GAME/log4j-1.2.9.jar:$GAME/j
 find "$MOD_DIR/src" -name "*.java" > /tmp/starlogue_sources.txt
 echo "Compiling $(wc -l < /tmp/starlogue_sources.txt) source files..."
 
-javac -source 8 -target 8 -cp "$CLASSPATH" -d "$CLASSES_DIR" @/tmp/starlogue_sources.txt 2>&1 | grep -v "^Note:"
-JAVAC_EXIT=${PIPESTATUS[0]}
+JAVAC_OUTPUT=$(javac -source 17 -target 17 -cp "$CLASSPATH" -d "$CLASSES_DIR" @/tmp/starlogue_sources.txt 2>&1)
+JAVAC_EXIT=$?
+echo "$JAVAC_OUTPUT" | grep -v "^Note:" || true
 if [ "$JAVAC_EXIT" -ne 0 ]; then
     echo "✗ Compilation failed (exit $JAVAC_EXIT)!"
     exit 1
