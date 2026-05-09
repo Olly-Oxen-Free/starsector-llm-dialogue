@@ -32,6 +32,13 @@ public final class StarlogueAPI {
     // Set to true in StarlogueModPlugin.onApplicationLoad()
     private static boolean loaded = false;
 
+    // Singleton handles for the extension-point accessor methods below.
+    // MemoryEngine and FactionProfileRegistry are entirely static utility classes;
+    // these instances act as stable handles for contributor plugins that need a
+    // typed reference (e.g. to pass to a factory or store in a field).
+    private static final MemoryEngine MEMORY_ENGINE_INSTANCE = new MemoryEngine();
+    private static final FactionProfileRegistry FACTION_PROFILE_REGISTRY_INSTANCE = new FactionProfileRegistry();
+
     // Active conversation context — non-null only during a conversation
     private static GameContext currentContext = null;
 
@@ -140,11 +147,31 @@ public final class StarlogueAPI {
      */
     public static GameContext getCurrentContext() { return currentContext; }
 
-    /** Returns the MemoryEngine singleton for direct score queries. */
-    public static MemoryEngine getMemoryEngine() { return null; /* singleton via static methods */ }
+    /**
+     * Returns a stable handle to the MemoryEngine.
+     *
+     * <p>All MemoryEngine operations are static; this instance is a typed
+     * reference intended for contributor plugins that need to store or pass
+     * a {@code MemoryEngine} reference. Use {@code MemoryEngine.getScore(person)}
+     * etc. directly for score queries.
+     *
+     * <p>Extension point: contributor plugins may cast to a subclass if a
+     * future release makes MemoryEngine non-final.
+     */
+    public static MemoryEngine getMemoryEngine() { return MEMORY_ENGINE_INSTANCE; }
 
-    /** Returns the FactionProfileRegistry for profile lookups. */
-    public static FactionProfileRegistry getFactionProfileRegistry() { return null; /* singleton via static methods */ }
+    /**
+     * Returns a stable handle to the FactionProfileRegistry.
+     *
+     * <p>All registry operations are static; this instance is a typed
+     * reference for contributor plugins. Use
+     * {@code FactionProfileRegistry.getProfile(factionId)} directly for lookups.
+     *
+     * <p>Extension point: contributor plugins can call
+     * {@code StarlogueAPI.registerFactionProfile(contributor)} to inject custom
+     * profiles without needing a direct registry reference.
+     */
+    public static FactionProfileRegistry getFactionProfileRegistry() { return FACTION_PROFILE_REGISTRY_INSTANCE; }
 
     // ── Internal conversation lifecycle (called by StarlogueDialogPlugin) ──
 
