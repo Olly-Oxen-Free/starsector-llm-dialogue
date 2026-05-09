@@ -40,4 +40,14 @@ public final class LunaSettingHelper {
             return fallback;
         }
     }
+
+    public static double getDouble(String key, double fallback) {
+        if (!lunaLibAvailable()) return fallback;
+        try {
+            Double v = lunalib.lunaSettings.LunaSettings.getDouble("starlogue", key);
+            return v != null ? v : fallback;
+        } catch (Throwable t) {
+            return fallback;
+        }
+    }
 }
