@@ -39,7 +39,7 @@ public class IntelMarkMemoryAction implements StarlogueAction {
     @Override
     public boolean isAvailable(GameContext ctx) {
         if (ctx.memoryScore < 5f) return false;
-        if (ctx.repLevel.isAtBest(RepLevel.HOSTILE)) return false;
+        if (ctx.repLevel == null || ctx.repLevel.isAtBest(RepLevel.HOSTILE)) return false;
         return Global.getSector() != null && Global.getSector().getPlayerFleet() != null;
     }
 

@@ -35,7 +35,8 @@ public class ChallengeDisguiseAction implements StarlogueAction {
     public boolean isAvailable(GameContext ctx) {
         if (ctx.fleet == null || ctx.person == null) return false;
         if (ctx.playerTransponderOn) return false;
-        return ctx.fleetSignatureMismatchHint > 0.25f && !ctx.repLevel.isAtBest(RepLevel.HOSTILE);
+        return ctx.fleetSignatureMismatchHint > 0.25f
+                && (ctx.repLevel == null || !ctx.repLevel.isAtBest(RepLevel.HOSTILE));
     }
 
     @Override
