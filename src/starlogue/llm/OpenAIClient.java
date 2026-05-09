@@ -14,9 +14,13 @@ public class OpenAIClient implements LLMClient {
 
     private static final Logger log = Logger.getLogger(OpenAIClient.class);
 
+    /** Shared HttpClient — allocated once per JVM lifetime. Thread-safe per Java spec. */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build();
+
     private final String endpoint;
     private final String apiKey;
-    private final HttpClient http;
 
     public OpenAIClient(String baseUrl, String apiKey) {
         // Normalise endpoint to always point at /chat/completions
@@ -24,9 +28,6 @@ public class OpenAIClient implements LLMClient {
         if (url.endsWith("/")) url = url.substring(0, url.length() - 1);
         this.endpoint = url.endsWith("/chat/completions") ? url : url + "/chat/completions";
         this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
     }
 
     /**
@@ -63,7 +64,7 @@ public class OpenAIClient implements LLMClient {
 
         log.debug("Starlogue → LLM endpoint: " + endpoint);
 
-        HttpResponse<String> response = http.send(builder.build(),
+        HttpResponse<String> response = HTTP.send(builder.build(),
                                                   HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {

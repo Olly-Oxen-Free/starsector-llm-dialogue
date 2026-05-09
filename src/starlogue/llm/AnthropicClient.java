@@ -33,14 +33,15 @@ public class AnthropicClient implements LLMClient {
     private static final String ENDPOINT = "https://api.anthropic.com/v1/messages";
     private static final String ANTHROPIC_VERSION = "2023-06-01";
 
+    /** Shared HttpClient — allocated once per JVM lifetime. Thread-safe per Java spec. */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build();
+
     private final String apiKey;
-    private final HttpClient http;
 
     public AnthropicClient(String apiKey) {
         this.apiKey = apiKey;
-        this.http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
     }
 
     @Override
@@ -58,7 +59,7 @@ public class AnthropicClient implements LLMClient {
 
         log.debug("Starlogue → Anthropic endpoint: " + ENDPOINT);
 
-        HttpResponse<String> response = http.send(httpRequest,
+        HttpResponse<String> response = HTTP.send(httpRequest,
                                                   HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
