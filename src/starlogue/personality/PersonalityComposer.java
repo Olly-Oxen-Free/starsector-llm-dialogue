@@ -91,37 +91,8 @@ public class PersonalityComposer {
     public static String composeFromParts(String factionId, String personality,
                                           String rank, boolean isAICore,
                                           String[] skillNotes) {
-        StringBuilder sb = new StringBuilder();
-
-        // 1. Faction baseline
         FactionProfile profile = FactionProfileRegistry.getProfile(factionId);
-        sb.append(profile.baseline).append(" ");
-
-        // 2. Personality modifier
-        String pNote = PERSONALITY_NOTES.get(personality);
-        if (pNote != null) sb.append(pNote);
-
-        // 3. Rank modifier
-        String rNote = RANK_NOTES.get(rank);
-        if (rNote != null) sb.append(rNote);
-
-        // 4. Skills
-        for (String note : skillNotes) {
-            sb.append(note).append(" ");
-        }
-
-        // 5. AI core
-        if (isAICore) {
-            sb.append("You are an artificial intelligence. "
-                    + "You do not form emotional attachments. "
-                    + "You reason in probabilities. ");
-        }
-
-        // Closing instruction
-        sb.append("Respond in 1-3 sentences. Do not break character. "
-                + "Do not describe your own actions in third person — speak directly.");
-
-        return sb.toString().trim();
+        return buildBaseFromString(profile.baseline, personality, rank, isAICore, skillNotes);
     }
 
     /**
@@ -132,40 +103,27 @@ public class PersonalityComposer {
     private static String buildBaseFromLiveContext(String liveContext, String personality,
                                                    String rank, boolean isAICore,
                                                    String[] skillNotes) {
-        StringBuilder sb = new StringBuilder();
-        if (liveContext != null && !liveContext.isEmpty()) {
-            sb.append(liveContext).append(" ");
-        } else {
-            sb.append("You are a fleet commander operating in the Persean Sector. ");
-        }
-
-        String pNote = PERSONALITY_NOTES.get(personality);
-        if (pNote != null) sb.append(pNote);
-
-        String rNote = RANK_NOTES.get(rank);
-        if (rNote != null) sb.append(rNote);
-
-        for (String note : skillNotes) {
-            sb.append(note).append(" ");
-        }
-
-        if (isAICore) {
-            sb.append("You are an artificial intelligence. "
-                    + "You do not form emotional attachments. "
-                    + "You reason in probabilities. ");
-        }
-
-        sb.append("Respond in 1-3 sentences. Do not break character. "
-                + "Do not describe your own actions in third person — speak directly.");
-
-        return sb.toString().trim();
+        String base = (liveContext != null && !liveContext.isEmpty())
+            ? liveContext
+            : "You are a fleet commander operating in the Persean Sector.";
+        return buildBaseFromString(base, personality, rank, isAICore, skillNotes);
     }
 
     private static String buildBaseFromProfile(String baseline, String personality,
                                                String rank, boolean isAICore,
                                                String[] skillNotes) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(baseline).append(" ");
+        return buildBaseFromString(baseline, personality, rank, isAICore, skillNotes);
+    }
+
+    /**
+     * Core builder — shared by all three compose paths.
+     * Appends personality, rank, skill, AI-core notes, and the closing
+     * instruction onto the provided {@code base} string.
+     */
+    private static String buildBaseFromString(String base, String personality,
+                                              String rank, boolean isAICore,
+                                              String[] skillNotes) {
+        StringBuilder sb = new StringBuilder(base).append(" ");
 
         String pNote = PERSONALITY_NOTES.get(personality);
         if (pNote != null) sb.append(pNote);

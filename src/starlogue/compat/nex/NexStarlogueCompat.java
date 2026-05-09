@@ -30,15 +30,11 @@ public final class NexStarlogueCompat implements ActionContributor {
 
     @Override
     public List<StarlogueAction> getActions(GameContext ctx) {
-        if (Global.getSettings() == null
-                || !Global.getSettings().getModManager().isModEnabled("nexerelin")) {
-            return Collections.emptyList();
-        }
-        List<StarlogueAction> list = new ArrayList<StarlogueAction>();
-        list.add(new NexColonyReportAction());
-        list.add(new NexFactionSignalAction());
-        list.add(new NexAgentTipAction());
-        return list;
+        // NexColonyReportAction, NexFactionSignalAction, and NexAgentTipAction are
+        // placeholder stubs pending a versioned reflection audit of the Nex API.
+        // Returning them wastes three tool slots for no real behaviour.
+        // They remain in this file for reference and will be wired when audited.
+        return Collections.emptyList();
     }
 
     /** Best-effort Nex colony intel bridge (placeholder until versioned reflection is audited). */
