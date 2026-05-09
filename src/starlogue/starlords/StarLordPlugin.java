@@ -5,8 +5,8 @@ import com.fs.starfarer.api.campaign.*;
 import com.fs.starfarer.api.campaign.econ.MarketAPI;
 import com.fs.starfarer.api.characters.PersonAPI;
 import starlogue.action.StarlogueAction;
+import starlogue.engine.FleetContextBuilder;
 import starlogue.engine.GameContext;
-import starlogue.memory.MemoryEngine;
 import starlogue.personality.PersonalityComposer;
 import starlogue.provider.StarloguePlugin;
 import starlords.controllers.FiefController;
@@ -36,42 +36,14 @@ public class StarLordPlugin implements StarloguePlugin {
     @Override
     public GameContext buildContext(SectorEntityToken entity) {
         CampaignFleetAPI fleet = (CampaignFleetAPI) entity;
-        PersonAPI commander = fleet.getCommander();
-        Lord lord = LordController.getLordById(commander.getId());
+        Lord lord = LordController.getLordById(fleet.getCommander().getId());
 
-        FactionAPI npcFaction = fleet.getFaction();
-        FactionAPI playerFaction = Global.getSector().getPlayerFaction();
-        CampaignFleetAPI playerFleet = Global.getSector().getPlayerFleet();
-
-        GameContext ctx = new GameContext();
-        ctx.entity = entity;
-        ctx.person = commander;
-        ctx.speakerName = commander.getNameString();
-        ctx.fleet = fleet;
-        ctx.npcFaction = npcFaction;
-        ctx.playerFaction = playerFaction;
-        ctx.repLevel = npcFaction.getRelationshipLevel(playerFaction.getId());
-        ctx.repValue = npcFaction.getRelationship(playerFaction.getId());
-        ctx.individualRel = ctx.repValue;
-
-        ctx.npcFleetPoints = fleet.getFleetPoints();
-        ctx.playerFleetPoints = playerFleet != null ? playerFleet.getFleetPoints() : 0;
-        int denom = Math.max(ctx.npcFleetPoints, ctx.playerFleetPoints);
-        ctx.strengthDelta = denom == 0 ? 0f
-            : (float)(ctx.npcFleetPoints - ctx.playerFleetPoints) / denom;
-
-        ctx.memoryScore = MemoryEngine.getScore(commander);
-        ctx.playerHasBluffCredibility = MemoryEngine.getFactionScore(npcFaction) > -20f;
+        // Shared fleet fields via builder; lord-specific additions appended below.
+        GameContext ctx = FleetContextBuilder.buildBase(fleet);
         ctx.isStarLord = true;
         ctx.lordData = lord;
 
-        if (playerFleet != null) {
-            com.fs.starfarer.api.campaign.rules.MemoryAPI playerMem = playerFleet.getMemory();
-            ctx.repGained30d = playerMem.contains("$starlogue_rep_gained_30d")
-                ? playerMem.getFloat("$starlogue_rep_gained_30d") : 0f;
-            ctx.repLost30d = playerMem.contains("$starlogue_rep_lost_30d")
-                ? playerMem.getFloat("$starlogue_rep_lost_30d") : 0f;
-        }
+        CampaignFleetAPI playerFleet = Global.getSector().getPlayerFleet();
 
         // Lord-specific context notes
         int playerRel = lord.getPlayerRel();
