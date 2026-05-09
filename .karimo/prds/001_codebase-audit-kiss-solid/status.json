@@ -1,12 +1,13 @@
 {
   "slug": "codebase-audit-kiss-solid",
-  "status": "ready",
+  "status": "wave-1-complete",
   "created": "2026-05-09",
   "approved": "2026-05-09",
   "task_count": 13,
   "complexity_total": 35,
   "waves": 3,
-  "tasks_completed": [],
-  "current_wave": null,
-  "notes": "Approved by user 2026-05-09. Aggressive god-class extraction approved; PR-per-wave cadence; UX uses animated dots."
+  "tasks_completed": ["T-1", "T-2", "T-3", "T-7", "T-9", "T-10", "T-12"],
+  "current_wave": 1,
+  "wave_1_pr_branch": "karimo/001-audit-w1",
+  "notes": "Approved by user 2026-05-09. Aggressive god-class extraction approved; PR-per-wave cadence; UX uses animated dots. Wave 1 complete 2026-05-09."
 }
