@@ -1,7 +1,7 @@
 project:
   name: Starlogue
   type: starsector-mod
-  runtime: java-8
+  runtime: java-17
   framework: starsector-api
   package_manager: none
   source_dirs:
@@ -19,7 +19,7 @@ commands:
 boundaries:
   never_touch:
     - jars/**
-    - "/home/jayden-eppcohen/Games/Starsector/**"
+    - "${STARSECTOR_DIR}/**"  # Game install dir (set per-developer)
     - .git/**
   require_review:
     - mod_info.json
@@ -28,7 +28,7 @@ boundaries:
 
 context:
   game_version: "0.98a-RC8"
-  java_version: 8
+  java_version: 17
   classpath_deps:
     - starfarer.api.jar
     - lwjgl.jar

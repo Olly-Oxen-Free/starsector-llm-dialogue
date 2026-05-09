@@ -154,8 +154,6 @@ public class StarLordPlugin implements StarloguePlugin {
             ? "This lord has a mission available for you."
             : "This lord has no mission to offer at this time.");
 
-        starlogue.engine.FleetContextHelper.enrichPlayerSide(ctx);
-
         return ctx;
     }
 
