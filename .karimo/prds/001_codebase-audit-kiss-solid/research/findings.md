@@ -100,7 +100,26 @@ Extract shared `FleetContextBuilder` helper in `engine/`.
 
 ---
 
-## Recommended Slicing (13 PRD Tasks)
+## Addendum 2026-05-10 — Gameplay Bugs (Wave 4)
+
+User-reported runtime bugs found via in-game observation, not visible from code-only audit:
+
+**GAMEPLAY-1 · `AttackAction` is too gentle** · `action/fleet/AttackAction.java`
+LLM correctly invokes `attack` tool when player threatens, but fleet never actually engages. Root cause: action only sets `FleetAssignment.INTERCEPT`; then the `exitConversation()` peaceful-exit branch applies `setNoEngaging(2.5f)` to both fleets, overriding the intercept. Also: dialog stays open after `attack` runs, contradicting the action's documented "ends the conversation" behavior.
+
+Fix → T-14: `endsConversation()` interface hook, set `MemFlags.MEMORY_KEY_PURSUE_PLAYER`, clear no-engage timer, dismiss dialog post-execute.
+
+**GAMEPLAY-2 · Fake engagement persists after peaceful exit** · `ui/StarlogueDialogPlugin.java`, `ui/OpenChannelCommand.java`
+`OpenChannelCommand` calls `dialog.setPlugin(starlogue)` — replacing the parent fleet-encounter plugin. The encounter is already real at sector level (Starsector opened the parent dialog as part of normal fleet interception machinery). On peaceful exit, the existing 2.5s `setNoEngaging` cooldown only suppresses the conversed pair — nearby AI fleets see the engagement state and pile in to reinforce, escalating a chat into a real battle.
+
+Fix → T-15: high-risk; clear `BattleAPI` state via `Misc.giveStandardReturnToSourceAssignments`, extend no-engage cooldown to nearby allied fleets within range, decide between `dismiss()` vs `restoreSavedOptions()` for cleanest sector-level disengagement.
+
+**OBSERVATION · T-13 dots already shipped** · `StarlogueDialogPlugin.java:200-208`
+`WAIT_FRAMES` cycle on `advance()` already implements the animated-dots subtask originally planned for T-13. T-13 rescoped to (a) API-key preflight, (b) in-character "{NPC name} is thinking…" text, (c) tooltips on Send/End options, (d) lightweight test runner.
+
+---
+
+## Recommended Slicing (16 PRD Tasks — was 13; +Wave 4)
 
 | ID | Title | Complexity | Priority | Depends |
 |----|-------|-----------|----------|---------|
@@ -116,9 +135,12 @@ Extract shared `FleetContextBuilder` helper in `engine/`.
 | T-10 | Wire up `StarlogueAPI.getMemoryEngine()` / `getFactionProfileRegistry()` | 2 | should | — |
 | T-11 | Consolidate `LunaSettingHelper` duplication (KISS-2) + extract `JsonUtils` (LLM-DUPL) | 3 | could | T-5 |
 | T-12 | Parameterize `PersonalityComposer` triplet (KISS-3) + decide on Nex placeholders (KISS-6) | 3 | could | — |
-| T-13 | UX: API key preflight + LLM-call progress indicator + lightweight test runner | 4 | could | T-5 |
+| T-13 | UX: API-key preflight + in-character dot text + tooltips + test runner (RESCOPED) | 4 | could | T-5 |
+| T-14 | Make `AttackAction` actually hostile + add `endsConversation()` hook (GAMEPLAY-1) | 4 | must | T-5 |
+| T-15 | Fix fake-engagement persistence on dialog exit (GAMEPLAY-2) | 5 | must | T-5, T-14 |
+| T-16 | UX polish: abort current LLM call + dynamic option tooltips | 3 | should | T-5 |
 
-**Total**: 13 tasks, ~35 complexity points. Wave 1 (no deps): T-1, T-2, T-3, T-7, T-9, T-10, T-12. Wave 2: T-4, T-6 (after T-5), T-8, T-11. Wave 3: T-13.
+**Total**: 16 tasks, ~47 complexity points. Wave 1 (no deps): T-1, T-2, T-3, T-7, T-9, T-10, T-12. Wave 2: T-4, T-6 (after T-5), T-8. Wave 3: T-11, T-13. Wave 4 (added 2026-05-10): T-14, T-15, T-16.
 
 ---
 

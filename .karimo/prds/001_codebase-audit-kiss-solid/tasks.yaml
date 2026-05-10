@@ -213,7 +213,7 @@ tasks:
       - Nex compat actions either do real work or are unregistered.
 
   - id: T-13
-    title: "UX: API-key preflight + animated-dots progress + lightweight test runner"
+    title: "UX: API-key preflight + in-character dot text + option tooltips + lightweight test runner"
     priority: could
     complexity: 4
     depends_on: [T-5]
@@ -223,16 +223,134 @@ tasks:
       - test/starlogue/TestRunner.java (new)
       - build.sh
     description: |
-      Three UX-and-tooling improvements bundled. (a) On dialog open, check
-      for a usable API key; if none, show a friendly "Configure API key in
-      LunaSettings" message instead of failing on first send. (b) While an
-      LLM call is pending, show cycling dots ("." → ".." → "...") in the
-      dialog text driven by `advance()` time accumulator — no extra threads.
-      (c) Add `test/starlogue/TestRunner.java` with a `main` that
-      reflectively invokes `testXxx`-named methods on the three existing
-      test classes; wire `./build.sh test` to invoke it.
+      Rescoped 2026-05-10: original "animated dots" subtask dropped — dots
+      already cycle via WAIT_FRAMES at StarlogueDialogPlugin lines 200-208.
+      Replaced with in-character text + tooltip work.
+
+      (a) On dialog open, check for a usable API key; if none, show a
+      friendly "Configure API key in LunaSettings" message instead of
+      failing on first send.
+      (b) Replace generic "Starlogue is processing your message ..." with
+      in-character text using the NPC's display name, e.g. "{Name} is
+      thinking ...". Pull from ctx.person or ctx.entity.getName() with safe
+      fallback to current generic.
+      (c) Wire optionMousedOver (currently empty stub at line 190) to
+      surface a one-line description for Send / End options.
+      (d) Add test/starlogue/TestRunner.java with a main() that
+      reflectively invokes testXxx-named methods on the three existing
+      test classes; wire ./build.sh test to invoke it.
     acceptance:
       - Missing API key surfaces a clear message at dialog open.
-      - Player sees cycling dots during LLM calls.
-      - `./build.sh test` runs all three test classes and reports pass/fail.
+      - Waiting indicator uses the NPC's name when available.
+      - Send / End options have hover-help text.
+      - ./build.sh test runs all three test classes and reports pass/fail.
       - All three existing tests pass.
+
+  # ─── WAVE 4 — Combat & Engagement Fixes (added 2026-05-10) ───
+
+  - id: T-14
+    title: "Make AttackAction actually hostile + add endsConversation() hook"
+    priority: must
+    complexity: 4
+    depends_on: [T-5]
+    files:
+      - src/starlogue/action/StarlogueAction.java
+      - src/starlogue/action/fleet/AttackAction.java
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+    description: |
+      Currently AttackAction.execute() only calls clearAssignments() +
+      addAssignment(INTERCEPT, playerFleet, 1f). This gets overridden by
+      the post-conversation setNoEngaging(2.5f) cooldown applied in
+      exitConversation(), so the fleet never actually engages.
+
+      Three changes:
+
+      (1) StarlogueAction interface gains a default method
+          `default boolean endsConversation() { return false; }`.
+          AttackAction.endsConversation() returns true.
+
+      (2) executeToolCall() in StarlogueDialogPlugin: after running an
+          action where endsConversation() is true, call failSafe() /
+          dialog.dismiss() immediately and SKIP the setNoEngaging cooldown
+          branch in exitConversation for that case.
+
+      (3) AttackAction.execute() flips memory flags so Starsector treats
+          the fleet as actually hostile:
+            - ctx.fleet.getMemoryWithoutUpdate().set(MemFlags.MEMORY_KEY_PURSUE_PLAYER, true, ~3 days)
+            - clear any existing no-engage timer: ctx.fleet.setNoEngaging(0f); playerFleet.setNoEngaging(0f)
+            - keep INTERCEPT assignment.
+
+      The setNoEngaging(2.5f) peaceful-exit cooldown applies ONLY when no
+      endsConversation()-true action ran during the session.
+    acceptance:
+      - Saying "I attack you" -> AI invokes attack tool -> fleet pursues player on dialog close.
+      - Combat actually starts (manual playtest: wait after dialog dismiss; fleet should chase).
+      - Peaceful conversations still get the 2.5s cooldown.
+      - endsConversation() default returns false; only AttackAction overrides initially.
+
+  - id: T-15
+    title: "Fix fake-engagement persistence on dialog exit"
+    priority: must
+    complexity: 5
+    depends_on: [T-5, T-14]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/ui/OpenChannelCommand.java
+    description: |
+      Starlogue replaces the parent dialog plugin via dialog.setPlugin() in
+      OpenChannelCommand. The parent dialog was opened by Starsector's
+      normal fleet-encounter machinery, so the encounter is real at sector
+      level — nearby AI fleets see the engagement and reinforce, even when
+      the conversation is purely peaceful.
+
+      Required investigation + fix (high risk — touches game-thread state):
+
+      (1) On peaceful exit (no tool call OR no endsConversation()-true
+          action), call BattleAPI.disengage() or equivalent on the parent
+          encounter's BattleAPI. Look up via ctx.fleet.getBattle() (may be
+          null if no battle) and Misc.giveStandardReturnToSourceAssignments(ctx.fleet, true).
+
+      (2) Test whether dialog.dismiss() versus setPlugin(priorPlugin) +
+          restoreSavedOptions() differ in how Starsector reports the
+          encounter state to nearby fleets. If dismiss() is cleaner, use
+          it on peaceful exit too — accept the tradeoff that the player
+          loses the parent menu.
+
+      (3) Extend the no-engage cooldown to nearby player-allied fleets in
+          range so they don't pile in: iterate
+          Global.getSector().getCurrentLocation().getFleets() within
+          (e.g.) 2000su, filter to non-hostile-to-player-faction, and apply
+          setNoEngaging(5f) to each.
+
+      Manual playtest is the only real verification — automate as much
+      precondition logging as possible (audit log entries with battle-state,
+      nearby-fleet count, engagement assignments).
+    acceptance:
+      - After peaceful conversation exit, no other AI fleet pursues into combat with the conversed fleet.
+      - Player can leave the area without auto-engagement.
+      - Hostile conversations (T-14) still trigger combat correctly.
+      - Audit log records battle-state on entry and exit.
+
+  - id: T-16
+    title: "UX polish: abort current LLM call + dynamic option tooltips"
+    priority: should
+    complexity: 3
+    depends_on: [T-5]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+    description: |
+      (a) During WAITING state, replace the End option with an "Abort
+      request" option. Selecting it sets a volatile flag on the LLM
+      dispatcher (T-5) that causes the in-flight HTTP response to be
+      ignored on arrival; UI returns to IDLE with "[Request cancelled]"
+      paragraph.
+
+      (b) Wire optionMousedOver for the dynamic response options Starlogue
+      surfaces — when the LLM's reply suggests multiple branches as inline
+      option keys, hovering each shows summary text.
+
+      (c) Audit-log the abort with reason "user_aborted".
+    acceptance:
+      - User can cancel a slow LLM call without exiting the dialog.
+      - Hover tooltips appear on Send / End / Abort and any dynamic options.
+      - Abort doesn't cause stale tool calls to apply if the response arrived after cancel.

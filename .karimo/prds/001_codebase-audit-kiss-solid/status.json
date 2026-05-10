@@ -1,13 +1,15 @@
 {
   "slug": "codebase-audit-kiss-solid",
-  "status": "wave-1-complete",
+  "status": "wave-1-in-review",
   "created": "2026-05-09",
   "approved": "2026-05-09",
-  "task_count": 13,
-  "complexity_total": 35,
-  "waves": 3,
+  "revised": "2026-05-10",
+  "task_count": 16,
+  "complexity_total": 47,
+  "waves": 4,
   "tasks_completed": ["T-1", "T-2", "T-3", "T-7", "T-9", "T-10", "T-12"],
   "current_wave": 1,
+  "wave_1_pr": "https://github.com/Olly-Oxen-Free/starsector-llm-dialogue/pull/1",
   "wave_1_pr_branch": "karimo/001-audit-w1",
-  "notes": "Approved by user 2026-05-09. Aggressive god-class extraction approved; PR-per-wave cadence; UX uses animated dots. Wave 1 complete 2026-05-09."
+  "notes": "Wave 1 complete 2026-05-09; greptile P1 fix landed 2026-05-09 (commit 6814fcc). Wave 4 added 2026-05-10 (T-14 hostility fix, T-15 engagement teardown, T-16 abort+tooltips) after user-reported gameplay bugs. T-13 rescoped — animated dots already shipped."
 }
