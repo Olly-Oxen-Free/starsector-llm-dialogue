@@ -19,7 +19,7 @@ import starlogue.provider.StarloguePlugin;
 import org.json.JSONObject;
 import org.apache.log4j.Logger;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
+import starlogue.llm.LlmDispatcher;
 
 public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
@@ -46,8 +46,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private enum State { IDLE, WAITING, ERROR }
     private State state = State.IDLE;
     private float waitTimer = 0f;
-    private final AtomicReference<LLMResponse> pending = new AtomicReference<LLMResponse>(null);
-    private final AtomicReference<Exception> pendingError = new AtomicReference<Exception>(null);
+    private final LlmDispatcher dispatcher = new LlmDispatcher();
     private String pendingUserMessage = null;
     private final String conversationId = ConversationAuditLog.newConversationId();
     private boolean conversationAuditClosed = false;
@@ -207,12 +206,12 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             options.setOptionText("⌛ Working… " + WAIT_FRAMES[idx], OPT_SEND);
         } catch (Throwable ignored) { }
 
-        LLMResponse response = pending.getAndSet(null);
-        if (response != null) {
+        java.util.Optional<LLMResponse> maybeResponse = dispatcher.poll();
+        if (maybeResponse.isPresent()) {
             state = State.IDLE;
             waitTimer = 0f;
             try {
-                displayResponse(response);
+                displayResponse(maybeResponse.get());
             } catch (Throwable e) {
                 log.error("Starlogue: displayResponse failed", e);
                 reportError("Failed to render LLM response: " + describe(e));
@@ -220,8 +219,9 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             return;
         }
 
-        Exception err = pendingError.getAndSet(null);
-        if (err != null) {
+        java.util.Optional<Exception> maybeError = dispatcher.pollError();
+        if (maybeError.isPresent()) {
+            Exception err = maybeError.get();
             log.error("Starlogue: LLM error", err);
             state = State.IDLE;
             waitTimer = 0f;
@@ -411,32 +411,10 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             log.debug("Starlogue system prompt:\n" + systemPrompt);
         }
 
-        Thread t = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                StringBuilder attemptErrors = new StringBuilder();
-                for (int i = 0; i < backends.size(); i++) {
-                    LlmBackendConfig.BackendOption backend = backends.get(i);
-                    LLMRequest request = new LLMRequest(messages, tools, backend.model, temp, maxTokens);
-                    try {
-                        LLMResponse response = completeWithBackendRetry(createClientForBackend(backend), backend, request);
-                        pending.set(response);
-                        return;
-                    } catch (Exception e) {
-                        String msg = e.getMessage() != null ? e.getMessage() : describe(e);
-                        if (attemptErrors.length() > 0) attemptErrors.append(" | ");
-                        attemptErrors.append("#").append(i + 1).append(" ")
-                            .append(backend.provider).append("/")
-                            .append(backend.model).append(": ").append(msg);
-                        log.warn("Starlogue: backend attempt " + (i + 1) + "/" + backends.size()
-                            + " failed for provider=" + backend.provider + " model=" + backend.model, e);
-                    }
-                }
-                pendingError.set(new RuntimeException("All configured backends failed: " + attemptErrors.toString()));
-            }
-        });
-        t.setDaemon(true);
-        t.start();
+        // Delegate background dispatch + retry to LlmDispatcher. The dispatcher owns
+        // the daemon thread; we supply the per-backend client factory inline.
+        final LLMRequest baseRequest = new LLMRequest(messages, tools, first.model, temp, maxTokens);
+        dispatcher.dispatch(baseRequest, backends, this::createClientForBackend);
     }
 
     private void displayResponse(LLMResponse response) {
@@ -664,54 +642,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return new OpenAIClient(b.customEndpoint, b.apiKey); // custom
     }
 
-    private LLMResponse completeWithBackendRetry(LLMClient client,
-                                                 LlmBackendConfig.BackendOption backend,
-                                                 LLMRequest request) throws Exception {
-        try {
-            return client.complete(request);
-        } catch (Exception e) {
-            if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterNoTools(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryMode", "same-model-no-tools");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_TOOLLESS", "StarlogueDialogPlugin.sendToLLMImpl",
-                        "retry-without-tools", d.toString());
-                } catch (Throwable ignore) { }
-                log.warn("Starlogue: OpenRouter model does not support tool use; retrying once without tools");
-                LLMRequest retryNoTools = new LLMRequest(request.messages,
-                    java.util.Collections.<Map<String, Object>>emptyList(),
-                    request.model, request.temperature, request.maxTokens);
-                return client.complete(retryNoTools);
-            }
-            if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterError(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryModel", "openrouter/auto");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_RETRY", "StarlogueDialogPlugin.sendToLLMImpl",
-                        "retry-on-provider-error", d.toString());
-                } catch (Throwable ignore) { }
-                log.warn("Starlogue: OpenRouter provider error for model=" + request.model
-                    + ", retrying once with openrouter/auto");
-                LLMRequest retry = new LLMRequest(request.messages, request.tools, "openrouter/auto",
-                    request.temperature, request.maxTokens);
-                return client.complete(retry);
-            }
-            if (shouldRetryWithDefaultTemperature(e, request.temperature)) {
-                float fallbackTemp = defaultFallbackTemperature();
-                log.warn("Starlogue: invalid temperature for model=" + request.model
-                    + ", retrying once with fallback temperature=" + fallbackTemp);
-                LLMRequest retry = new LLMRequest(request.messages, request.tools, request.model,
-                    fallbackTemp, request.maxTokens);
-                return client.complete(retry);
-            }
-            throw e;
-        }
-    }
-
     private static String describe(Throwable t) {
         if (t == null) return "unknown error";
         String msg = t.getMessage();
@@ -786,44 +716,12 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return "LLM call failed: " + describe(e);
     }
 
-    private static boolean shouldRetryOpenRouterError(Exception e) {
-        String msg = e != null ? e.getMessage() : null;
-        if (msg == null) return false;
-        boolean is429 = msg.contains("HTTP 429") || msg.contains(" 429 ");
-        boolean is502 = msg.contains("HTTP 502") || msg.contains(" 502 ");
-        boolean providerErr = msg.toLowerCase().contains("provider returned error");
-        return is429 || (is502 && providerErr);
-    }
-
-    private static boolean shouldRetryOpenRouterNoTools(Exception e) {
-        String msg = e != null ? e.getMessage() : null;
-        if (msg == null) return false;
-        String m = msg.toLowerCase();
-        return (m.contains("http 404") || m.contains("http 400"))
-            && m.contains("no endpoints found that support tool use");
-    }
-
-    private static boolean shouldRetryWithDefaultTemperature(Exception e, float currentTemp) {
-        if (Math.abs(currentTemp - defaultFallbackTemperature()) < 0.0001f) return false;
-        String msg = e != null ? e.getMessage() : null;
-        if (msg == null) return false;
-        String m = msg.toLowerCase();
-        return m.contains("temperature")
-            && (m.contains("invalid")
-                || m.contains("only 1 is allowed")
-                || m.contains("must be")
-                || m.contains("unsupported value"));
-    }
-
-    private static float defaultFallbackTemperature() {
-        return 1.0f;
-    }
-
     /** Called on any unrecoverable error. Cleans up and exits to vanilla dialog flow. */
     private void failSafe() {
         state = State.ERROR;
-        pending.set(null);
-        pendingError.set(null);
+        // Drain any in-flight dispatcher results so they don't surface in a future dialog.
+        dispatcher.poll();
+        dispatcher.pollError();
         closeConversationAudit("failsafe");
         StarlogueAPI.clearCurrentContext();
         if (dialog != null) dialog.dismiss();
