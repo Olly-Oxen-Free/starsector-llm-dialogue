@@ -98,3 +98,34 @@ The CLI defaults to `claude-opus-4-7`. For NPC dialogue this is overkill (cost-a
 ## Sign-Off
 
 PRD `claude-cli-mcp-integration` is **GREEN to proceed**. Architecture confirmed by live test. C-0 task descoped from "verify three things" to "capture auth-failure stderr only".
+
+---
+
+## C-0 Auth-Stderr Capture
+
+**Date:** 2026-05-10
+**CLI version:** 2.1.133 (Claude Code)
+**Test method:** Moved `~/.claude/.credentials.json` away, ran `timeout 10 claude -p --output-format json "ping" </dev/null`, restored credentials immediately.
+
+**Exit code:** `1`
+
+**stderr:** *(empty — no output)*
+
+**stdout (verbatim JSON):**
+```json
+{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"duration_ms":43,"duration_api_ms":0,"num_turns":1,"result":"Not logged in · Please run /login","stop_reason":"stop_sequence","session_id":"5f1b9895-0bfb-4bca-bfd3-353a4ad74df3","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"completed","fast_mode_state":"off","uuid":"d8981354-8105-4e1f-b7b5-60785827e604"}
+```
+
+**Key finding:** Auth errors appear on **stdout** (not stderr), embedded in the JSON result field when `--output-format json` is used. The `result` field contains the human-readable message; `is_error: true` is the machine-readable signal.
+
+**Stable matching substrings for C-8 preflight:**
+
+| Approach | Substring | Reliability |
+|----------|-----------|-------------|
+| Primary (JSON field) | `"is_error":true` | High — present in JSON output mode for any error |
+| Secondary (text in result) | `"Not logged in"` | High — stable Claude Code auth message |
+| Tertiary (text in result) | `"Please run /login"` | High — stable CLI prompt |
+
+**Recommended C-8 strategy:** When using `--output-format json`, parse JSON and check `is_error == true`. For belt-and-suspenders, also check `stdout.contains("Not logged in")`. Exit code `1` is a necessary but not sufficient check (other errors also return 1).
+
+**Credential restore verified:** `ls -la ~/.claude/.credentials.json` confirmed file present; `claude --version` returned `2.1.133`.
