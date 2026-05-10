@@ -1,13 +1,13 @@
 {
   "slug": "claude-cli-mcp-integration",
-  "status": "wave-2-complete",
+  "status": "wave-3-complete",
   "created": "2026-05-10",
   "approved": "2026-05-10",
   "task_count": 13,
   "complexity_total": 33,
   "waves": 4,
-  "tasks_completed": ["C-0", "C-1", "C-2", "C-3", "C-4"],
-  "current_wave": 2,
+  "tasks_completed": ["C-0", "C-1", "C-2", "C-3", "C-4", "C-5", "C-6", "C-8"],
+  "current_wave": 3,
   "spike_pre_pr": "research/spike-c0-results.md",
   "wave_1_commits": {
     "C-0": "6b0dc48",
@@ -18,5 +18,10 @@
     "C-3": "b4a1c40",
     "C-4": "13364b1"
   },
-  "notes": "Approved 2026-05-10. Architecture: in-JVM HTTP MCP server via JDK HttpServer, hand-rolled JSON-RPC. Streaming via stream-json + --include-partial-messages. Pre-PRD C-0 spike PASSED: HTTP transport works (4.5s/turn), --tools \"\" preserves MCP tools, CLI 2.1.133 confirmed. C-0 descoped to auth-stderr capture only. C-12 added (system-prompt cost-reduction spike). Default model = sonnet (was opus). Wave 1 complete 2026-05-10. Wave 2 complete 2026-05-10: McpServer (C-2), McpToolSchema (C-3), McpToolBridge (C-4) all committed. Build clean (109 sources). json.jar is pre-modern org.json: put() throws JSONException, uses Iterator keys() not keySet() — all mcp/ files adapted."
+  "wave_3_commits": {
+    "C-5": "af5fd48",
+    "C-6": "3f189cb",
+    "C-8": "3f189cb"
+  },
+  "notes": "Approved 2026-05-10. Architecture: in-JVM HTTP MCP server via JDK HttpServer, hand-rolled JSON-RPC. Streaming via stream-json + --include-partial-messages. Pre-PRD C-0 spike PASSED: HTTP transport works (4.5s/turn), --tools \"\" preserves MCP tools, CLI 2.1.133 confirmed. C-0 descoped to auth-stderr capture only. C-12 added (system-prompt cost-reduction spike). Default model = sonnet (was opus). Wave 1 complete 2026-05-10. Wave 2 complete 2026-05-10: McpServer (C-2), McpToolSchema (C-3), McpToolBridge (C-4) all committed. Build clean (109 sources). json.jar is pre-modern org.json: put() throws JSONException, uses Iterator keys() not keySet() — all mcp/ files adapted. Wave 3 complete 2026-05-10: ClaudeCliClient (C-5), ProviderFactory session wiring + dialog lifecycle (C-6), ClaudeCliPreflight (C-8). Build clean (115 sources). Key decisions: LlmSession pattern (b) chosen — ProviderFactory.CliSessionHolder interface exposes McpServer + McpToolBridge for post-construction wiring. MCP config URL = http://127.0.0.1:<port>/mcp (matches McpServer /mcp context). C-6+C-8 bundled in one commit (StarlogueDialogPlugin.init() interleaves preflight + session construction). endsConversation bridge: McpToolBridge.consumeHandoffFlag() + drainNarrativeNotes() added; StarlogueAPI.peekHandoff() added for non-consuming handoff detection."
 }
