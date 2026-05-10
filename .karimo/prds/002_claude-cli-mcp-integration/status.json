@@ -1,0 +1,13 @@
+{
+  "slug": "claude-cli-mcp-integration",
+  "status": "ready",
+  "created": "2026-05-10",
+  "approved": "2026-05-10",
+  "task_count": 13,
+  "complexity_total": 33,
+  "waves": 4,
+  "tasks_completed": [],
+  "current_wave": null,
+  "spike_pre_pr": "research/spike-c0-results.md",
+  "notes": "Approved 2026-05-10. Architecture: in-JVM HTTP MCP server via JDK HttpServer, hand-rolled JSON-RPC. Streaming via stream-json + --include-partial-messages. Pre-PRD C-0 spike PASSED: HTTP transport works (4.5s/turn), --tools \"\" preserves MCP tools, CLI 2.1.133 confirmed. C-0 descoped to auth-stderr capture only. C-12 added (system-prompt cost-reduction spike). Default model = sonnet (was opus)."
+}

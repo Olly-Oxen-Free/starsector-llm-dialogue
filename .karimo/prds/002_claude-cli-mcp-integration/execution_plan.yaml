@@ -1,0 +1,40 @@
+prd: claude-cli-mcp-integration
+strategy: pr-per-wave
+created: 2026-05-10
+revised: 2026-05-10  # C-0 descoped post-spike; C-12 added; C-1 expanded with model selector
+
+waves:
+  - wave: 1
+    name: "Spike + foundation"
+    rationale: "C-0 is a hard gate — its findings drive C-2 transport choice and C-8 stderr matchers. C-1 is independent config plumbing, parallel-safe."
+    tasks: [C-0, C-1]
+    merge_pr: "PR — wave 1 (spike report + provider config)"
+    gate: "C-0 spike findings written; C-1 LunaSettings entry visible in-game (or asserted via settings load test)."
+
+  - wave: 2
+    name: "MCP server + tool bridge"
+    rationale: "Pure backend infra. No subprocess interaction yet. Independent of C-1; depends only on C-0 spike result."
+    tasks: [C-2, C-3, C-4]
+    merge_pr: "PR — wave 2 (McpServer, McpToolSchema, McpToolBridge)"
+    gate: "JUnit-style tests pass for MCP RPC envelopes; tool bridge round-trips a stub action call."
+
+  - wave: 3
+    name: "CLI client + dialog integration"
+    rationale: "Brings the provider online end-to-end. Highest risk — first wave that actually invokes the subprocess and exercises the full path."
+    tasks: [C-5, C-6, C-8]
+    merge_pr: "PR — wave 3 (ClaudeCliClient, ProviderFactory wiring, preflight)"
+    gate: "Manual playtest: open dialog with claude_cli provider selected → preflight passes → conversation works → at least one tool call executes through MCP."
+
+  - wave: 4
+    name: "Polish: streaming, abort, integration test, docs"
+    rationale: "Additive UX + verification. None block merge to main."
+    tasks: [C-7, C-9, C-10, C-11, C-12]
+    merge_pr: "PR — wave 4 (streaming partial text, abort, integration script, README, system-prompt cost spike)"
+    gate: "Streaming visible in dialog; abort kills subprocess; integration script PASS; docs reviewed; C-12 spike report written."
+
+longest_chain: "C-0 → C-2 → C-5 → C-6"
+
+complexity_total: 33  # was 35; C-0 descoped 3→1, C-12 added (+2)
+must_count: 7
+should_count: 4
+could_count: 2  # +C-12
