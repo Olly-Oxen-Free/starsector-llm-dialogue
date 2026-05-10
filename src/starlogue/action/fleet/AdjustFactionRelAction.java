@@ -57,7 +57,7 @@ public class AdjustFactionRelAction implements StarlogueAction {
     public void execute(GameContext ctx, Map<String, Object> args) {
         Object rawObj = args.get("delta");
         if (rawObj == null) return;
-        double raw = ((Number) rawObj).doubleValue();
+        double raw = asFloat(rawObj);
         // Faction-level deltas are smaller than individual — max ±0.08
         float delta = (float) Math.max(-0.08, Math.min(0.08, raw));
 
@@ -90,4 +90,14 @@ public class AdjustFactionRelAction implements StarlogueAction {
     }
 
     @Override public String narrativeNote() { return null; }
+
+    /** Coerces numeric or string-typed JSON values to float. LLMs sometimes return numbers as strings. */
+    private static float asFloat(Object val) {
+        if (val instanceof Number) return ((Number) val).floatValue();
+        try {
+            return Float.parseFloat(String.valueOf(val));
+        } catch (Throwable t) {
+            return 0f;
+        }
+    }
 }

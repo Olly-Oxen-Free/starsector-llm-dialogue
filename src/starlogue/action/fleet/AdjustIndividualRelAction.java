@@ -48,7 +48,9 @@ public class AdjustIndividualRelAction implements StarlogueAction {
 
     @Override
     public void execute(GameContext ctx, Map<String, Object> args) {
-        double raw = ((Number) args.get("delta")).doubleValue();
+        Object rawObj = args.get("delta");
+        if (rawObj == null) return;
+        double raw = asFloat(rawObj);
         float delta = (float) Math.max(-0.10, Math.min(0.10, raw));
 
         boolean isPositive = delta > 0;
@@ -79,4 +81,14 @@ public class AdjustIndividualRelAction implements StarlogueAction {
     }
 
     @Override public String narrativeNote() { return null; }
+
+    /** Coerces numeric or string-typed JSON values to float. LLMs sometimes return numbers as strings. */
+    private static float asFloat(Object val) {
+        if (val instanceof Number) return ((Number) val).floatValue();
+        try {
+            return Float.parseFloat(String.valueOf(val));
+        } catch (Throwable t) {
+            return 0f;
+        }
+    }
 }

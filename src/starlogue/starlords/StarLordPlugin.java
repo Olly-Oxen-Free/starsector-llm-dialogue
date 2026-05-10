@@ -159,38 +159,8 @@ public class StarLordPlugin implements StarloguePlugin {
 
     @Override
     public List<StarlogueAction> getActions(GameContext ctx) {
-        List<StarlogueAction> actions = new ArrayList<StarlogueAction>();
-        // Parity with FleetCaptainPlugin (fleet negotiation + §4 tools)
-        actions.add(new starlogue.action.fleet.AttackAction());
-        actions.add(new starlogue.action.fleet.RetreatAction());
-        actions.add(new starlogue.action.fleet.StandDownAction());
-        actions.add(new starlogue.action.fleet.WarnOffAction());
-        actions.add(new starlogue.action.fleet.ExtortAction());
-        actions.add(new starlogue.action.fleet.PayTributeAction());
-        actions.add(new starlogue.action.fleet.TradeOfferAction());
-        actions.add(new starlogue.action.fleet.TransferCreditsAction());
-        actions.add(new starlogue.action.fleet.TransferSuppliesAction());
-        actions.add(new starlogue.action.fleet.TransferFuelAction());
-        actions.add(new starlogue.action.fleet.RansomCrewAction());
-        actions.add(new starlogue.action.fleet.ShareIntelAction());
-        actions.add(new starlogue.action.fleet.RecruitAllyAction());
-        actions.add(new starlogue.action.fleet.CeasefireAction());
-        actions.add(new starlogue.action.fleet.AdjustIndividualRelAction());
-        actions.add(new starlogue.action.fleet.AdjustFactionRelAction());
-        actions.add(new starlogue.action.fleet.InspectFleetAction());
-        actions.add(new starlogue.action.fleet.InspectShipDetailAction());
-        actions.add(new starlogue.action.fleet.BluffIdentityAction());
-        actions.add(new starlogue.action.fleet.ChallengeDisguiseAction());
-        actions.add(new starlogue.action.fleet.ExposeInconsistencyAction());
-        actions.add(new starlogue.action.fleet.IntelShareTipAction());
-        actions.add(new starlogue.action.fleet.IntelMarkMemoryAction());
-        actions.add(new starlogue.action.fleet.PersonSetNoteAction());
-        actions.add(new starlogue.action.fleet.FleetEscortPlayerAction());
-        actions.add(new starlogue.action.fleet.FleetPatrolHereAction());
-        actions.add(new starlogue.action.fleet.FleetDisengageSoftAction());
-        actions.add(new starlogue.action.fleet.FleetHarassAction());
-        actions.add(new starlogue.action.fleet.TransferMarinesAction());
-        actions.add(new starlogue.action.fleet.TransferCommodityBundleAction());
+        // Common fleet actions shared with FleetCaptainPlugin
+        List<StarlogueAction> actions = starlogue.action.fleet.DefaultFleetActions.list();
         // Star Lord exclusive
         actions.add(new PledgeAllianceAction());
         actions.add(new SwayLordAction());
