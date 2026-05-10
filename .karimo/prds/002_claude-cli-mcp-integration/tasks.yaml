@@ -1,0 +1,413 @@
+prd: claude-cli-mcp-integration
+created: 2026-05-10
+
+tasks:
+  - id: C-0
+    title: "Spike: capture auth-failure stderr (DESCOPED — HTTP + --tools \"\" pre-validated)"
+    priority: must
+    complexity: 1
+    depends_on: []
+    files:
+      - .karimo/prds/claude-cli-mcp-integration/research/spike-c0-results.md
+    description: |
+      DESCOPED 2026-05-10: pre-PRD spike (see spike-c0-results.md) confirmed:
+        - HTTP MCP transport works with CLI 2.1.133 (4.5s/turn)
+        - stdio MCP transport also works (3.1s/turn)
+        - `--tools ""` does NOT suppress MCP tools — only built-ins
+        - Default model is opus; CLI accepts --model selector
+
+      Remaining work for this task: capture exact unauthenticated stderr
+      strings + exit code by running `claude -p "ping"` in an isolated env
+      with renamed `~/.claude/.credentials.json`. Used by C-8 preflight.
+
+      Steps:
+        1. Backup ~/.claude/.credentials.json to /tmp/
+        2. Move credentials away
+        3. Run `claude -p --output-format json "ping"` with 5s timeout
+        4. Capture exit code + stderr verbatim
+        5. Restore credentials
+        6. Append findings to spike-c0-results.md
+    acceptance:
+      - Unauthenticated stderr substring(s) recorded for C-8 preflight matching.
+      - Exit code recorded.
+      - Credentials restored after test.
+
+  - id: C-1
+    title: "Add claude_cli provider to LlmBackendConfig + LunaSettings"
+    priority: must
+    complexity: 2
+    depends_on: []
+    files:
+      - src/starlogue/config/LlmBackendConfig.java
+      - data/config/LunaSettings.csv  # Or wherever the LunaLib settings registry lives
+      - data/config/settings.json
+    description: |
+      Extend the provider enum/string list in LlmBackendConfig to include
+      `claude_cli`. Add LunaSettings entries:
+        - starlogue_provider: dropdown gains "Claude CLI" option
+        - starlogue_claude_cli_path: text field, default "claude" (PATH lookup)
+        - starlogue_claude_cli_timeout_sec: int, default 60
+      Updating provider to `claude_cli` should cause subsequent dialog opens
+      to route through the new client (wired in C-6).
+
+      Added 2026-05-10 from spike findings:
+        - starlogue_claude_cli_model: dropdown with values [haiku, sonnet, opus]
+          (default sonnet — Opus is overkill for NPC dialogue and cheaper models
+          dramatically improve subscription quota usage). Surfaces as `--model`
+          flag in C-5.
+    acceptance:
+      - LunaSettings shows Claude CLI as a provider option.
+      - Model selector exposed; default is `sonnet`.
+      - Selecting Claude CLI does NOT require an API key field to be populated.
+      - LlmBackendConfig.provider + claudeCliModel return the new values when selected.
+
+  - id: C-2
+    title: "Hand-rolled MCP JSON-RPC server on JDK HttpServer (localhost only)"
+    priority: must
+    complexity: 4
+    depends_on: [C-0]
+    files:
+      - src/starlogue/mcp/McpServer.java (new)
+      - src/starlogue/mcp/McpRpcHandler.java (new)
+      - src/starlogue/mcp/McpJsonRpc.java (new)  # request/response/error envelopes
+    description: |
+      Build a JSON-RPC 2.0 server using `com.sun.net.httpserver.HttpServer`.
+      One endpoint: POST /mcp. Bind to 127.0.0.1 on a random ephemeral port
+      via `new InetSocketAddress("127.0.0.1", 0)`.
+
+      Implement methods:
+        - initialize → returns server info + capabilities { tools: { listChanged: false } }
+        - notifications/initialized → no response, just ack
+        - tools/list → returns array of registered tools (populated by C-3)
+        - tools/call → invokes tool via bridge (populated by C-4)
+        - ping → simple liveness response
+
+      Reuse `org.json` (json.jar already on classpath) for parsing/serialization.
+      Reuse `JsonUtils` (Wave-3 helper) where it fits.
+
+      Concurrency: HttpServer uses default executor (cached thread pool). Each
+      request runs on a worker thread; we'll marshal back to game thread in C-4.
+
+      Lifecycle: `start(int desiredPort)` returns actual bound port; `stop()`
+      blocks until shutdown completes.
+
+      No transport-mode logic in this task — pure JSON-RPC plumbing.
+    acceptance:
+      - Server starts on a random localhost port; `start()` returns the actual port.
+      - initialize, tools/list (empty), tools/call (placeholder), ping all return valid JSON-RPC responses.
+      - Server only accepts connections from 127.0.0.1; reject all others (verify via test).
+      - `stop()` releases the port cleanly.
+
+  - id: C-3
+    title: "Map Starlogue actions to MCP tool schema"
+    priority: must
+    complexity: 2
+    depends_on: [C-2]
+    files:
+      - src/starlogue/mcp/McpToolSchema.java (new)
+      - src/starlogue/engine/ConstraintEngine.java  # may extract a small helper
+    description: |
+      Convert the existing `EvaluatedActionSet.available` list to MCP-format
+      tools. MCP requires `{name, description, inputSchema}` where inputSchema
+      is JSON Schema draft-07.
+
+      Reuse `ConstraintEngine.buildToolsArray()` logic — the parameter schema
+      is already JSON-Schema-compatible (object with required string fields).
+
+      Tool names: prefix with `starlogue_` (e.g., `starlogue_attack`,
+      `starlogue_share_intel`) for namespacing if Claude exposes built-ins
+      with conflicting names. (Confirm in C-0 spike.)
+
+      Method: `McpToolSchema.toMcpTools(EvaluatedActionSet set) → List<McpTool>`.
+      Each McpTool holds the StarlogueAction reference for execution lookup.
+    acceptance:
+      - All `available` actions converted to MCP tool entries.
+      - Schema validates as JSON Schema draft-07.
+      - Action lookup by tool name returns the original `StarlogueAction`.
+      - Bluff-only actions excluded (matches existing OpenAI tools-array behavior).
+
+  - id: C-4
+    title: "McpToolBridge: game-thread tool execution queue"
+    priority: must
+    complexity: 4
+    depends_on: [C-2]
+    files:
+      - src/starlogue/mcp/McpToolBridge.java (new)
+      - src/starlogue/ui/StarlogueDialogPlugin.java  # advance() drains queue
+    description: |
+      Bridge between MCP server thread (where tools/call arrives) and game
+      thread (where `StarlogueAction.execute()` must run).
+
+      Pattern (mirrors existing AtomicReference<LLMResponse> polling):
+
+        - McpToolBridge holds a bounded ConcurrentLinkedQueue<ToolCallRequest>
+        - ToolCallRequest = (toolId, args, CompletableFuture<ToolResult>)
+        - MCP server's tools/call handler:
+            1. Look up StarlogueAction by toolId via McpToolSchema
+            2. Build ToolCallRequest, add to queue
+            3. await future.get(timeout=10s)
+            4. Return MCP tool_result envelope from future result
+        - StarlogueDialogPlugin.advance() polls bridge:
+            1. Drain queue; for each ToolCallRequest:
+            2. Try { result = action.execute(ctx, args); future.complete(success(result)) }
+            3. Catch { future.complete(error(t.getMessage())) }
+        - Tool result content: action.narrativeNote() → MCP text content.
+          Extra structured data (memory event id, fleet state delta) optional.
+
+      Cancellation: when LlmDispatcher.cancel() (T-16) fires, drain queue and
+      complete all pending futures with cancellation errors.
+
+      Capacity: bounded queue (size 8) — Claude may parallel-call tools but
+      Starlogue's flow is sequential. Drop-with-error if exceeded (defensive).
+    acceptance:
+      - Tool calls from MCP thread successfully execute on game thread.
+      - Tool errors propagate as MCP error responses without crashing dialog.
+      - Cancellation drains queue cleanly.
+      - Queue capacity limit enforced; exceeded calls return defined error.
+
+  - id: C-5
+    title: "ClaudeCliClient: spawn subprocess + parse stream-json"
+    priority: must
+    complexity: 5
+    depends_on: [C-2, C-3, C-4]
+    files:
+      - src/starlogue/llm/ClaudeCliClient.java (new)
+      - src/starlogue/mcp/McpConfigWriter.java (new)
+    description: |
+      New LLMClient implementation. Per call:
+
+      1. McpConfigWriter writes a temp file
+         `Files.createTempFile("starlogue-mcp-", ".json")` containing:
+           {"mcpServers":{"starlogue":{"transport":"http","url":"http://127.0.0.1:<port>/mcp"}}}
+         (Adjust transport key per C-0 spike result.)
+
+      2. Compose ProcessBuilder:
+           claude -p
+             --mcp-config <tmpfile>
+             --strict-mcp-config
+             --dangerously-skip-permissions
+             --tools ""           (or whitelist per C-0)
+             --output-format stream-json
+             --include-partial-messages
+             --append-system-prompt <starlogue system prompt>
+             "<user prompt>"
+         Use cli path from LunaSetting `starlogue_claude_cli_path`.
+
+      3. Stream stdout NDJSON line-by-line via BufferedReader. Parse each line
+         as JSON; switch on event type:
+           - assistant (partial) → append delta to in-progress LLMResponse text
+           - tool_use → log only (actual tool call goes via MCP transport)
+           - result → finalize LLMResponse
+           - error → throw
+
+      4. Apply timeout from LunaSetting; on timeout kill subprocess.
+
+      5. Delete temp config file in finally block.
+
+      Returns LLMResponse with toolCalls always empty (tool execution happens
+      inside CLI via MCP). The response.text contains the full assistant message.
+
+      Streaming hook: expose a callback `onPartialText(String delta)` so
+      LlmDispatcher / dialog plugin can render incremental text. Default is
+      no-op for non-streaming consumers.
+
+      Error mapping:
+        - exit non-zero + auth stderr substring → AuthFailedException
+        - exit non-zero + rate-limit stderr → RateLimitedException
+        - timeout → TimeoutException (already handled at dispatcher level)
+    acceptance:
+      - One end-to-end call: spawn → MCP tools/list → Claude responds → temp file deleted.
+      - Stream events produce incremental text.
+      - Exit codes / stderr produce typed exceptions matched by LlmDispatcher.
+      - Subprocess always reaped; no orphan processes after timeout.
+
+  - id: C-6
+    title: "Wire ClaudeCliClient through ProviderFactory + bypass executeToolCall"
+    priority: must
+    complexity: 3
+    depends_on: [C-5]
+    files:
+      - src/starlogue/llm/ProviderFactory.java
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+    description: |
+      ProviderFactory adds case `claude_cli` → returns new ClaudeCliClient(cfg, mcpServer, mcpBridge).
+      The MCP server + bridge are constructed once per dialog open (StarlogueDialogPlugin.init())
+      and shut down in exitConversation() / failSafe().
+
+      Dialog plugin: when provider is claude_cli, skip the existing
+      executeToolCall() path on response. The LLMResponse will have
+      toolCalls = [] always; tool execution already happened via MCP. Just
+      append response.text to dialog and return to IDLE.
+
+      `conversationEnded` flag still applies — but it can only be set by the
+      MCP bridge if a hostile-style action was invoked (T-14 endsConversation()).
+      Bridge needs to detect endsConversation() flag on the executed action
+      and signal back to dialog plugin via a separate atomic flag.
+    acceptance:
+      - Selecting claude_cli provider routes to ClaudeCliClient cleanly.
+      - Tool calls execute via MCP bridge; no double-execution via executeToolCall.
+      - endsConversation() actions still terminate dialog correctly under this provider.
+      - Switching back to anthropic provider mid-game restores normal tool-call path.
+
+  - id: C-7
+    title: "Streaming integration: render partial text deltas in dialog"
+    priority: should
+    complexity: 3
+    depends_on: [C-5]
+    files:
+      - src/starlogue/llm/LlmDispatcher.java
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+    description: |
+      LlmDispatcher exposes an optional partial-text callback. ClaudeCliClient
+      invokes it as deltas arrive.
+
+      Dialog plugin: when state is WAITING and a partial delta is available,
+      replace the "{NPC} is thinking ..." indicator (T-13) with the
+      accumulating partial text. Use existing `text.replaceLastParagraph` to
+      update. Switch back to indicator if subprocess errors out.
+
+      Game-thread safety: deltas are written to an AtomicReference<String>
+      from background; advance() reads + renders.
+
+      Polish: on first delta, also clear the cycling dots; on result event,
+      no need to re-render — the partial text IS the final text.
+    acceptance:
+      - Partial text appears in dialog within ~1.5s of submit on a typical turn.
+      - No double-render when result event arrives.
+      - Falls back to indicator if subprocess errors mid-stream.
+      - Other providers unaffected (no partial callback registered).
+
+  - id: C-8
+    title: "Auth preflight on dialog open + friendly errors"
+    priority: must
+    complexity: 3
+    depends_on: [C-1, C-5]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/llm/ClaudeCliPreflight.java (new)
+    description: |
+      When provider is claude_cli, run preflight on dialog init:
+
+      1. `<cli_path> --version` exits 0? If not: "Claude CLI not found.
+         Install: https://docs.anthropic.com/en/docs/claude-code"
+      2. Quick `<cli_path> -p "ping"` with 5s timeout, exit 0? If not:
+         "Claude CLI not authenticated. Run `claude` once in a terminal to log in."
+         Use exact stderr matchers from C-0 spike results.
+      3. MCP server bind succeeded? If not: "Failed to start MCP bridge on
+         localhost. Check logs."
+
+      Surface failure: dialog shows the error paragraph + disables Send option.
+      End option still works.
+
+      Cache preflight result for 5 minutes per dialog open to avoid re-probing
+      on every conversation.
+    acceptance:
+      - Each failure mode shows the correct friendly message.
+      - Preflight runs in under 6s total (<= 1s for version, <= 5s for auth probe).
+      - Successful preflight does not impede normal dialog open performance.
+      - Preflight result cached within a single dialog session.
+
+  - id: C-9
+    title: "Abort integration: kill subprocess + drain bridge queue"
+    priority: should
+    complexity: 2
+    depends_on: [C-5]
+    files:
+      - src/starlogue/llm/LlmDispatcher.java
+      - src/starlogue/llm/ClaudeCliClient.java
+      - src/starlogue/mcp/McpToolBridge.java
+    description: |
+      Extend the T-16 cancel() flow:
+        - LlmDispatcher.cancel() invokes ClaudeCliClient.abort() if a CLI
+          subprocess is in flight.
+        - abort() sends Process.destroy(), then Process.destroyForcibly() if
+          alive after 1s.
+        - McpToolBridge.cancelAll() drains queue, completes all pending
+          futures with CancellationException.
+        - Audit log entry "user_aborted".
+    acceptance:
+      - Abort during a slow CLI call kills subprocess within 2s.
+      - No orphan processes.
+      - Bridge queue empty after abort; pending tool-call HTTP responses get error envelopes.
+
+  - id: C-10
+    title: "Manual integration test script"
+    priority: should
+    complexity: 2
+    depends_on: [C-5]
+    files:
+      - tools/integration/test-claude-cli-flow.sh (new)
+    description: |
+      Bash script that exercises the full Claude CLI provider flow OUTSIDE
+      Starsector (since we can't launch Starsector in CI). The script:
+        1. Starts a small Java harness that boots McpServer + a stubbed
+           StarlogueAction registry (fake "echo" + "share_intel" tools)
+        2. Invokes ClaudeCliClient.complete() with a prompt that should
+           trigger one tool call
+        3. Asserts: subprocess spawned; MCP server received tools/list +
+           tools/call; final response includes tool result
+        4. Captures latency stats; reports PASS/FAIL
+
+      Java harness lives under `test/integration/ClaudeCliIntegrationTest.java`
+      and is invoked from the bash script.
+    acceptance:
+      - Script runs end-to-end on a developer machine with `claude` CLI present.
+      - Reports timing breakdown (preflight, CLI startup, MCP handshake, LLM round-trip, tool exec).
+      - Exit code reflects success/failure for CI integration if added later.
+
+  - id: C-11
+    title: "Documentation: README section + troubleshooting"
+    priority: could
+    complexity: 2
+    depends_on: [C-6]
+    files:
+      - README.md
+      - docs/claude-cli-provider.md (new)
+    description: |
+      README gains a "Claude CLI (Pro/Max subscription)" section pointing to
+      the new docs page. Docs page covers:
+        - What it is (use Claude.ai Pro/Max instead of API key)
+        - Install: link to https://docs.anthropic.com/en/docs/claude-code
+        - First-time auth: run `claude` once in a terminal
+        - LunaSettings configuration
+        - Latency expectations (5-7s/turn vs 1-2s API)
+        - Troubleshooting: common preflight failures + fixes
+        - Known limitations + minimum CLI version
+    acceptance:
+      - README links to docs page.
+      - Docs page covers all preflight failure modes from C-8.
+      - Minimum CLI version documented (from C-0 spike).
+
+  - id: C-12
+    title: "Investigate --system-prompt-file override for cost reduction"
+    priority: could
+    complexity: 2
+    depends_on: [C-5]
+    files:
+      - tools/spikes/system-prompt-override/  # Throwaway test
+      - src/starlogue/llm/ClaudeCliClient.java  # If viable, integrate
+    description: |
+      Spike + optional implementation (added 2026-05-10 from C-0 findings).
+
+      Each `claude -p` call injects ~17k tokens of Claude Code agent system
+      prompt + skills metadata as cache_creation overhead. For Pro/Max
+      subscribers this still consumes their usage quota.
+
+      Test: pass `--system-prompt-file <starlogue.md>` (or
+      `--append-system-prompt`) with a minimal NPC-dialogue persona prompt.
+      Run the same echo-tool spike. Verify:
+        - Tool calls still work (MCP transport unaffected)
+        - cache_creation_input_tokens drops significantly (target: <5k vs 17k)
+        - Response quality remains acceptable for Starlogue use case
+
+      If spike PASSES: extend ClaudeCliClient to write a small system-prompt
+      file per call from `getSystemPromptPreamble(ctx)` (existing per-provider
+      prompt) and pass `--system-prompt-file`. Could yield 3x quota efficiency
+      for subscribers.
+
+      If spike FAILS (system prompt breaks MCP or degrades quality): document
+      finding; do not integrate.
+    acceptance:
+      - Spike report appended to research/ with verdict.
+      - If integrated: token usage measurably reduced; tool calls + dialog quality unchanged.
+      - If not integrated: documented reason in research notes.
