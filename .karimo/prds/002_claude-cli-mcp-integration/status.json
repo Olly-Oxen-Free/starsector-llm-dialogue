@@ -1,13 +1,17 @@
 {
   "slug": "claude-cli-mcp-integration",
-  "status": "ready",
+  "status": "wave-1-complete",
   "created": "2026-05-10",
   "approved": "2026-05-10",
   "task_count": 13,
   "complexity_total": 33,
   "waves": 4,
-  "tasks_completed": [],
-  "current_wave": null,
+  "tasks_completed": ["C-0", "C-1"],
+  "current_wave": 1,
   "spike_pre_pr": "research/spike-c0-results.md",
-  "notes": "Approved 2026-05-10. Architecture: in-JVM HTTP MCP server via JDK HttpServer, hand-rolled JSON-RPC. Streaming via stream-json + --include-partial-messages. Pre-PRD C-0 spike PASSED: HTTP transport works (4.5s/turn), --tools \"\" preserves MCP tools, CLI 2.1.133 confirmed. C-0 descoped to auth-stderr capture only. C-12 added (system-prompt cost-reduction spike). Default model = sonnet (was opus)."
+  "wave_1_commits": {
+    "C-0": "6b0dc48",
+    "C-1": "6e10a27"
+  },
+  "notes": "Approved 2026-05-10. Architecture: in-JVM HTTP MCP server via JDK HttpServer, hand-rolled JSON-RPC. Streaming via stream-json + --include-partial-messages. Pre-PRD C-0 spike PASSED: HTTP transport works (4.5s/turn), --tools \"\" preserves MCP tools, CLI 2.1.133 confirmed. C-0 descoped to auth-stderr capture only. C-12 added (system-prompt cost-reduction spike). Default model = sonnet (was opus). Wave 1 complete 2026-05-10."
 }
