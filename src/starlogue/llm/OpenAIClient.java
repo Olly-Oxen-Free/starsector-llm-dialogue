@@ -127,41 +127,19 @@ public class OpenAIClient implements LLMClient {
 
         JSONArray messages = new JSONArray();
         for (Map<String, Object> msg : request.messages) {
-            messages.put(mapToJson(msg));
+            messages.put(JsonUtils.mapToJson(msg));
         }
         body.put("messages", messages);
 
         if (request.tools != null && !request.tools.isEmpty()) {
             JSONArray tools = new JSONArray();
             for (Map<String, Object> tool : request.tools) {
-                tools.put(deepToJson(tool));
+                tools.put(JsonUtils.deepToJson(tool));
             }
             body.put("tools", tools);
             body.put("tool_choice", "auto");
         }
 
         return body;
-    }
-
-    private JSONObject mapToJson(Map<String, Object> map) throws org.json.JSONException {
-        JSONObject obj = new JSONObject();
-        for (Map.Entry<String, Object> e : map.entrySet()) {
-            obj.put(e.getKey(), deepToJson(e.getValue()));
-        }
-        return obj;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object deepToJson(Object value) throws org.json.JSONException {
-        if (value instanceof Map) {
-            return mapToJson((Map<String, Object>) value);
-        } else if (value instanceof List) {
-            JSONArray arr = new JSONArray();
-            for (Object item : (List<?>) value) {
-                arr.put(deepToJson(item));
-            }
-            return arr;
-        }
-        return value;
     }
 }

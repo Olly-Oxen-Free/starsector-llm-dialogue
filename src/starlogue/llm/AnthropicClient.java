@@ -137,7 +137,7 @@ public class AnthropicClient implements LLMClient {
         // parameters → input_schema (same JSON Schema object)
         Object params = fn.get("parameters");
         if (params instanceof Map) {
-            anthropicTool.put("input_schema", deepToJson((Map<String, Object>) params));
+            anthropicTool.put("input_schema", JsonUtils.deepToJson((Map<String, Object>) params));
         } else {
             // Empty schema fallback
             JSONObject emptySchema = new JSONObject();
@@ -147,27 +147,5 @@ public class AnthropicClient implements LLMClient {
         }
 
         return anthropicTool;
-    }
-
-    private JSONObject mapToJson(Map<String, Object> map) throws org.json.JSONException {
-        JSONObject obj = new JSONObject();
-        for (Map.Entry<String, Object> e : map.entrySet()) {
-            obj.put(e.getKey(), deepToJson(e.getValue()));
-        }
-        return obj;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object deepToJson(Object value) throws org.json.JSONException {
-        if (value instanceof Map) {
-            return mapToJson((Map<String, Object>) value);
-        } else if (value instanceof List) {
-            JSONArray arr = new JSONArray();
-            for (Object item : (List<?>) value) {
-                arr.put(deepToJson(item));
-            }
-            return arr;
-        }
-        return value;
     }
 }

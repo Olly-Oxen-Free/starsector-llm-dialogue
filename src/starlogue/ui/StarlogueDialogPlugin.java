@@ -13,6 +13,7 @@ import starlogue.engine.*;
 import starlogue.llm.*;
 import starlogue.api.StarlogueAPI;
 import starlogue.config.LlmBackendConfig;
+import starlogue.config.LunaSettingHelper;
 import starlogue.debug.ConversationAuditLog;
 import starlogue.debug.DebugSessionLog;
 import starlogue.provider.StarloguePlugin;
@@ -369,9 +370,9 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         // Single credentials snapshot (same parse for validate + request).
         final List<LlmBackendConfig.BackendOption> backends = cfg.backends;
         String model     = cfg.model;
-        float  temp      = safeGetFloat ("starlogue_temperature",  0.8f);
-        int    maxTokens = safeGetInt   ("starlogue_max_tokens",   300);
-        int    maxTurns  = safeGetInt   ("starlogue_history_turns", 10);
+        float  temp      = LunaSettingHelper.getFloat  ("starlogue_temperature",   0.8f);
+        int    maxTokens = LunaSettingHelper.getInt    ("starlogue_max_tokens",    300);
+        int    maxTurns  = LunaSettingHelper.getInt    ("starlogue_history_turns", 10);
 
         LlmBackendConfig.BackendOption first = backends.get(0);
         log.info("Starlogue: effective LLM settings — backends=" + backends.size()
@@ -406,7 +407,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         log.info("Starlogue: sending request — tools=" + tools.size()
             + " provider=" + first.provider + " model=" + first.model);
 
-        if (safeGetBoolean("starlogue_debug_prompts", false)) {
+        if (LunaSettingHelper.getBoolean("starlogue_debug_prompts", false)) {
             log.debug("Starlogue system prompt:\n" + systemPrompt);
         }
 
@@ -444,7 +445,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         int toolCallCount = response.toolCalls.size();
         log.info("Starlogue: LLM response received — toolCalls=" + toolCallCount
             + " hasContent=" + (content != null && !content.isBlank()));
-        if (safeGetBoolean("starlogue_debug_tools", false)) {
+        if (LunaSettingHelper.getBoolean("starlogue_debug_tools", false)) {
             log.debug("Starlogue: " + toolCallCount + " tool call(s)");
         }
 
@@ -462,7 +463,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     }
 
     private void executeToolCall(LLMToolCall call) {
-        if (safeGetBoolean("starlogue_debug_tools", false)) {
+        if (LunaSettingHelper.getBoolean("starlogue_debug_tools", false)) {
             log.debug("Starlogue: tool call → " + call);
         }
 
@@ -805,61 +806,4 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return sb.toString().trim();
     }
 
-    // ── LunaLib helper methods (null-safe, NoClassDefFoundError-safe) ─────
-    //
-    // LunaLib is a soft dependency. If the user hasn't installed it the
-    // `lunalib.lunaSettings.LunaSettings` class is absent at runtime and any
-    // direct reference would throw NoClassDefFoundError the first time the
-    // method is called. We resolve the class reflectively and cache whether
-    // it's available so callers always get their fallback values back instead
-    // of a silent crash.
-
-    private static Boolean LUNA_AVAILABLE = null;
-
-    private static boolean lunaLibAvailable() {
-        if (LUNA_AVAILABLE != null) return LUNA_AVAILABLE;
-        try {
-            Class.forName("lunalib.lunaSettings.LunaSettings",
-                false, StarlogueDialogPlugin.class.getClassLoader());
-            LUNA_AVAILABLE = Boolean.TRUE;
-        } catch (Throwable t) {
-            LUNA_AVAILABLE = Boolean.FALSE;
-        }
-        return LUNA_AVAILABLE;
-    }
-
-    private static float safeGetFloat(String key, float fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        // LunaLib's CSV loader stores Double-typed fields; read as Double and narrow.
-        // Keep a getFloat fallback for legacy Float-typed rows (should no longer exist).
-        try {
-            Double d = lunalib.lunaSettings.LunaSettings.getDouble("starlogue", key);
-            if (d != null) return d.floatValue();
-        } catch (Throwable ignored) { }
-        try {
-            Float f = lunalib.lunaSettings.LunaSettings.getFloat("starlogue", key);
-            if (f != null) return f;
-        } catch (Throwable ignored) { }
-        return fallback;
-    }
-
-    private static int safeGetInt(String key, int fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        try {
-            Integer v = lunalib.lunaSettings.LunaSettings.getInt("starlogue", key);
-            return v != null ? v : fallback;
-        } catch (Throwable t) {
-            return fallback;
-        }
-    }
-
-    private static boolean safeGetBoolean(String key, boolean fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        try {
-            Boolean v = lunalib.lunaSettings.LunaSettings.getBoolean("starlogue", key);
-            return v != null ? v : fallback;
-        } catch (Throwable t) {
-            return fallback;
-        }
-    }
 }

@@ -50,4 +50,21 @@ public final class LunaSettingHelper {
             return fallback;
         }
     }
+
+    /**
+     * Reads a float setting, checking Double first (LunaLib CSV stores numeric fields as Double)
+     * then falling back to legacy Float rows.
+     */
+    public static float getFloat(String key, float fallback) {
+        if (!lunaLibAvailable()) return fallback;
+        try {
+            Double d = lunalib.lunaSettings.LunaSettings.getDouble("starlogue", key);
+            if (d != null) return d.floatValue();
+        } catch (Throwable ignored) { }
+        try {
+            Float f = lunalib.lunaSettings.LunaSettings.getFloat("starlogue", key);
+            if (f != null) return f;
+        } catch (Throwable ignored) { }
+        return fallback;
+    }
 }
