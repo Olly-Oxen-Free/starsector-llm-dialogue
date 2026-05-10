@@ -19,7 +19,6 @@ import starlogue.provider.StarloguePlugin;
 import org.json.JSONObject;
 import org.apache.log4j.Logger;
 import java.util.*;
-import starlogue.llm.LlmDispatcher;
 
 public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
@@ -411,10 +410,10 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             log.debug("Starlogue system prompt:\n" + systemPrompt);
         }
 
-        // Delegate background dispatch + retry to LlmDispatcher. The dispatcher owns
-        // the daemon thread; we supply the per-backend client factory inline.
+        // Delegate background dispatch + retry to LlmDispatcher.
+        // ProviderFactory supplies all provider-wiring; dialog plugin stays free of new XxxClient() calls.
         final LLMRequest baseRequest = new LLMRequest(messages, tools, first.model, temp, maxTokens);
-        dispatcher.dispatch(baseRequest, backends, this::createClientForBackend);
+        dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
     }
 
     private void displayResponse(LLMResponse response) {
@@ -625,21 +624,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             return "provider=" + b.provider + " requires starlogue_api_key.";
         }
         return null;
-    }
-
-    private LLMClient createClientForBackend(LlmBackendConfig.BackendOption b) {
-        if ("anthropic".equals(b.provider)) {
-            return new AnthropicClient(b.apiKey);
-        } else if ("openrouter".equals(b.provider)) {
-            return new OpenRouterClient(b.apiKey);
-        } else if ("xai".equals(b.provider)) {
-            return new XaiClient(b.apiKey, b.customEndpoint);
-        } else if ("openai".equals(b.provider)) {
-            return new OpenAIClient("https://api.openai.com/v1", b.apiKey);
-        } else if ("ollama".equals(b.provider)) {
-            return new OpenAIClient("http://localhost:11434/v1", b.apiKey);
-        }
-        return new OpenAIClient(b.customEndpoint, b.apiKey); // custom
     }
 
     private static String describe(Throwable t) {
