@@ -32,12 +32,57 @@ public final class LlmBackendConfig {
         }
     }
 
+    /**
+     * Configuration specific to the claude_cli provider.
+     * Populated from LunaSettings when LunaLib is present; falls back to hardcoded defaults.
+     * Wired into the active client in C-5/C-6.
+     */
+    public static final class ClaudeCliConfig {
+        /** Short alias passed to {@code --model}: haiku, sonnet, or opus. Default: sonnet. */
+        public final String model;
+        /** Path (or bare name) of the {@code claude} executable. Default: "claude". */
+        public final String cliPath;
+        /** Seconds before the CLI subprocess is killed. Default: 60. */
+        public final int timeoutSec;
+
+        public ClaudeCliConfig(String model, String cliPath, int timeoutSec) {
+            this.model = (model != null && !model.isEmpty()) ? model : "sonnet";
+            this.cliPath = (cliPath != null && !cliPath.isEmpty()) ? cliPath : "claude";
+            this.timeoutSec = (timeoutSec > 0) ? timeoutSec : 60;
+        }
+
+        /** Reads from LunaSettings when available, else returns defaults. */
+        public static ClaudeCliConfig fromLunaSettings() {
+            String model = "sonnet";
+            String cliPath = "claude";
+            int timeoutSec = 60;
+            if (LunaSettingHelper.lunaLibAvailable()) {
+                // getString not available in LunaSettingHelper; read via getBoolean/int/double
+                // For string fields we fall back to the LunaLib API directly (graceful on failure).
+                try {
+                    String m = lunalib.lunaSettings.LunaSettings.getString(
+                            "starlogue", "starlogue_claude_cli_model");
+                    if (m != null && !m.isEmpty()) model = m;
+                } catch (Throwable ignored) {}
+                try {
+                    String p = lunalib.lunaSettings.LunaSettings.getString(
+                            "starlogue", "starlogue_claude_cli_path");
+                    if (p != null && !p.isEmpty()) cliPath = p;
+                } catch (Throwable ignored) {}
+                timeoutSec = LunaSettingHelper.getInt("starlogue_claude_cli_timeout_sec", 60);
+            }
+            return new ClaudeCliConfig(model, cliPath, timeoutSec);
+        }
+    }
+
     public static final class Snapshot {
         public final List<BackendOption> backends;
         public final String provider;
         public final String apiKey;
         public final String model;
         public final String customEndpoint;
+        /** Non-null only when provider == "claude_cli". Populated from LunaSettings. */
+        public final ClaudeCliConfig claudeCli;
 
         public Snapshot(List<BackendOption> backends) {
             List<BackendOption> list = (backends == null) ? new ArrayList<BackendOption>() : backends;
@@ -51,6 +96,8 @@ public final class LlmBackendConfig {
             this.apiKey = first.apiKey;
             this.model = first.model;
             this.customEndpoint = first.customEndpoint;
+            // Populate CLI config only for the claude_cli provider; avoids unnecessary Luna reads.
+            this.claudeCli = "claude_cli".equals(this.provider) ? ClaudeCliConfig.fromLunaSettings() : null;
         }
     }
 
@@ -171,8 +218,14 @@ public final class LlmBackendConfig {
         if ("grok".equals(p)) {
             return "xai";
         }
+        // claude_cli: user invokes the local Claude Code CLI subprocess instead of a direct API call.
+        // The raw string "claudecli" results from the normalisation strip above.
+        if ("claudecli".equals(p)) {
+            return "claude_cli";
+        }
         if ("openai".equals(p) || "anthropic".equals(p)
-            || "openrouter".equals(p) || "ollama".equals(p) || "custom".equals(p) || "xai".equals(p)) {
+            || "openrouter".equals(p) || "ollama".equals(p) || "custom".equals(p) || "xai".equals(p)
+            || "claude_cli".equals(p)) {
             return p;
         }
         return "ollama";

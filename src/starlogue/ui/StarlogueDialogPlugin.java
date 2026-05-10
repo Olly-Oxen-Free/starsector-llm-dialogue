@@ -11,6 +11,9 @@ import com.fs.starfarer.api.ui.TooltipMakerAPI;
 import org.lwjgl.input.Keyboard;
 import starlogue.engine.*;
 import starlogue.llm.*;
+import starlogue.mcp.McpServer;
+import starlogue.mcp.McpToolBridge;
+import starlogue.mcp.McpToolSchema;
 import starlogue.api.StarlogueAPI;
 import starlogue.config.LlmBackendConfig;
 import starlogue.config.LunaSettingHelper;
@@ -20,6 +23,8 @@ import starlogue.provider.StarloguePlugin;
 import org.json.JSONObject;
 import org.apache.log4j.Logger;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
@@ -47,6 +52,18 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private State state = State.IDLE;
     private float waitTimer = 0f;
     private final LlmDispatcher dispatcher = new LlmDispatcher();
+    /**
+     * Active LLM session — non-null when a session is open. For non-CLI providers this
+     * is a trivial no-op wrapper. For {@code claude_cli} it owns the MCP server lifecycle.
+     * Closed in {@link #exitConversation()} and {@link #failSafe()}.
+     */
+    private LlmSession llmSession = null;
+    /**
+     * MCP bridge reference — non-null only when provider is {@code claude_cli}.
+     * Populated after session creation; used in {@link #advance(float)} to drain
+     * tool calls and detect handoffs.
+     */
+    private McpToolBridge mcpBridge = null;
     private String pendingUserMessage = null;
     private final String conversationId = ConversationAuditLog.newConversationId();
     private boolean conversationAuditClosed = false;
@@ -62,6 +79,20 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private static final String OPT_SEND = "starlogue_send";
     private static final String OPT_END  = "starlogue_end";
     private static final String[] WAIT_FRAMES = new String[] { "-", "\\", "|", "/" };
+
+    /**
+     * Accumulated partial text from the Claude CLI streaming response (C-7).
+     * Written from the background dispatch thread via the partial-text listener;
+     * read + rendered from the game thread in {@link #advance(float)}.
+     * Null when no partial text is available (non-CLI providers or before first delta).
+     */
+    private final AtomicReference<String> partialTextAccum = new AtomicReference<>(null);
+
+    /**
+     * True once the first partial-text delta has been applied to the dialog (C-7).
+     * Used to detect whether the waiting indicator needs replacing vs. first write.
+     */
+    private final AtomicBoolean partialTextRendered = new AtomicBoolean(false);
 
     public StarlogueDialogPlugin(SectorEntityToken target) {
         this(target, null, null, null);
@@ -105,20 +136,75 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             // misconfiguration surfaces as a friendly in-dialog message rather than
             // a silent dismiss or cryptic exception on first send.
             LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
-            String configError = validateConfig(cfg);
-            if (configError != null) {
-                // Surface a helpful hint about where to configure the key.
-                String providerHint = (cfg != null && cfg.provider != null && !cfg.provider.isEmpty())
-                    ? cfg.provider : "your LLM provider";
-                text.addParagraph("[Starlogue] API key is not configured for " + providerHint
-                    + ". Open LunaSettings (or edit saves/common/Starlogue_credentials.json)"
-                    + " and set starlogue_api_key, then re-open the channel.");
-                text.addParagraph("You can end the conversation and come back once the key is set.");
-                log.warn("Starlogue: API-key preflight failed — " + configError);
-                state = State.IDLE;
-                showMainOptions();
-                options.setEnabled(OPT_SEND, false);
-                return;
+
+            // For claude_cli: run auth preflight before constructing the session.
+            if ("claude_cli".equals(cfg.provider)) {
+                String cliPath = (cfg.claudeCli != null) ? cfg.claudeCli.cliPath : "claude";
+                ClaudeCliPreflight.PreflightResult preflight = ClaudeCliPreflight.check(cliPath);
+                if (preflight != ClaudeCliPreflight.PreflightResult.OK) {
+                    text.addParagraph("[Starlogue] " + ClaudeCliPreflight.friendlyMessage(preflight, cliPath));
+                    text.addParagraph("You can end the conversation and fix the issue, then re-open the channel.");
+                    log.warn("Starlogue: claude_cli preflight failed — " + preflight);
+                    state = State.IDLE;
+                    showMainOptions();
+                    options.setEnabled(OPT_SEND, false);
+                    return;
+                }
+
+                // Create session: starts McpServer, constructs ClaudeCliClient
+                try {
+                    LlmBackendConfig.BackendOption first = cfg.backends.get(0);
+                    llmSession = ProviderFactory.INSTANCE.createSession(first, cfg.claudeCli);
+                } catch (Exception e) {
+                    text.addParagraph("[Starlogue] Failed to start MCP bridge on localhost: " + describe(e)
+                        + ". Check Starsector log for details.");
+                    text.addParagraph("You can end the conversation and come back after restarting.");
+                    log.error("Starlogue: claude_cli session start failed", e);
+                    state = State.IDLE;
+                    showMainOptions();
+                    options.setEnabled(OPT_SEND, false);
+                    return;
+                }
+
+                // Wire the bridge: set schema + context
+                // ProviderFactory creates the bridge internally; retrieve it via the client
+                if (llmSession.client() instanceof ClaudeCliClient) {
+                    // Access bridge via reflection-free approach: use a wrapper session that exposes the bridge
+                    // The bridge is stored on the session created by createClaudeCliSession.
+                    // We need the bridge for draining. Store as mcpBridge via the factory.
+                    // Since ProviderFactory creates bridge internally, we pass context/schema post-creation
+                    // by having ProviderFactory expose the bridge — or we retrieve it differently.
+                    // Simplest: re-retrieve from the session field we store. The LlmSession returned by
+                    // createClaudeCliSession wraps the bridge; we need it exposed.
+                    // SOLUTION: cast session to ClaudeCliSession (inner class not accessible) — instead,
+                    // we use a CliSessionHolder interface added to the session.
+                }
+                // Retrieve the bridge from the session via the CliSessionHolder interface
+                if (llmSession instanceof ProviderFactory.CliSessionHolder) {
+                    mcpBridge = ((ProviderFactory.CliSessionHolder) llmSession).getBridge();
+                    McpToolSchema schema = new McpToolSchema(actionSet);
+                    mcpBridge.setSchema(schema);
+                    mcpBridge.setContext(ctx);
+                    // Also set schema on the McpServer via the session
+                    McpServer server = ((ProviderFactory.CliSessionHolder) llmSession).getServer();
+                    server.setSchema(schema);
+                }
+            } else {
+                // Non-CLI providers: standard API key validation
+                String configError = validateConfig(cfg);
+                if (configError != null) {
+                    String providerHint = (cfg.provider != null && !cfg.provider.isEmpty())
+                        ? cfg.provider : "your LLM provider";
+                    text.addParagraph("[Starlogue] API key is not configured for " + providerHint
+                        + ". Open LunaSettings (or edit saves/common/Starlogue_credentials.json)"
+                        + " and set starlogue_api_key, then re-open the channel.");
+                    text.addParagraph("You can end the conversation and come back once the key is set.");
+                    log.warn("Starlogue: API-key preflight failed — " + configError);
+                    state = State.IDLE;
+                    showMainOptions();
+                    options.setEnabled(OPT_SEND, false);
+                    return;
+                }
             }
             sendToLLM("(Conversation starts. Greet the player briefly and in character. One or two sentences only.)");
         } catch (Throwable e) {
@@ -142,6 +228,16 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         if (OPT_SEND.equals(optionData)) {
             submitCurrentInput();
         } else if (OPT_END.equals(optionData)) {
+            // C-9: if we are WAITING on the LLM, abort the in-flight request before exiting.
+            if (state == State.WAITING) {
+                log.info("Starlogue: user aborted while WAITING — cancelling in-flight request");
+                dispatcher.cancel();
+                if (mcpBridge != null) {
+                    mcpBridge.cancelAll();
+                }
+                ConversationAuditLog.logToolCall(conversationId, "", null, "user_aborted",
+                    "user pressed End while LLM request was in flight");
+            }
             exitConversation();
         }
     }
@@ -155,6 +251,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
      */
     private void exitConversation() {
         closeConversationAudit("player_exit");
+        closeSession();
         // Peaceful fleet comms: brief no-engage window so closing the LLM layer is less likely
         // to snap straight into a hostile pursuit in some encounter states.
         try {
@@ -221,29 +318,79 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     @Override
     public void advance(float amount) {
+        // Drain MCP tool calls on game thread (claude_cli only).
+        // Must happen regardless of state so in-flight tool calls complete even while
+        // the dialog is in WAITING state. drainOnGameThread is a no-op when the queue is empty.
+        if (mcpBridge != null) {
+            try {
+                mcpBridge.drainOnGameThread(ctx);
+
+                // Render any narrative notes from MCP tool executions
+                for (String note : mcpBridge.drainNarrativeNotes()) {
+                    text.addParagraph("[" + note + "]");
+                }
+
+                // Check if any MCP tool triggered a dialog handoff
+                if (mcpBridge.consumeHandoffFlag()) {
+                    final InteractionDialogPlugin handoff = StarlogueAPI.consumeHandoff();
+                    if (handoff != null) {
+                        failSafe();
+                        Global.getSector().addTransientScript(new EveryFrameScript() {
+                            private boolean done = false;
+                            public boolean isDone() { return done; }
+                            public boolean runWhilePaused() { return true; }
+                            public void advance(float delta) {
+                                if (!done) {
+                                    done = Global.getSector().getCampaignUI()
+                                        .showInteractionDialog(handoff, null);
+                                }
+                            }
+                        });
+                        return;
+                    }
+                }
+            } catch (Throwable t) {
+                log.error("Starlogue: error draining MCP bridge", t);
+            }
+        }
+
         if (state != State.WAITING) return;
         waitTimer += amount;
 
-        // Animated waiting indicator — only safe to run when the last thing in the text
-        // panel is a regular paragraph (e.g. "..."). If the last append was an inline
-        // text field (input), replaceLastParagraph would clobber it.
+        // Animated waiting indicator / partial-text rendering (C-7).
+        // Only safe to run when the last panel entry is a paragraph (not an input field).
         if (!inputFieldIsLatest) {
-            int idx = ((int) (waitTimer / 0.2f)) % WAIT_FRAMES.length;
-            // In-character dot text: use the NPC's display name when available.
-            String npcName = null;
-            try {
-                if (ctx != null) {
-                    if (ctx.person != null) {
-                        npcName = ctx.person.getNameString();
-                    } else if (ctx.entity != null) {
-                        npcName = ctx.entity.getName();
+            String partial = partialTextAccum.get();
+            if (partial != null && !partial.isEmpty()) {
+                // Streaming partial text from Claude CLI — replace indicator with live text.
+                // NPC speaker prefix on first delta; subsequent updates just update the text.
+                String speaker = null;
+                try {
+                    if (ctx != null) {
+                        if (ctx.speakerName != null) speaker = ctx.speakerName;
+                        else if (ctx.person != null) speaker = ctx.person.getNameString();
                     }
-                }
-            } catch (Throwable ignored) { }
-            String waitingText = (npcName != null && !npcName.isEmpty())
-                ? npcName + " is thinking " + WAIT_FRAMES[idx]
-                : "Starlogue is processing your message " + WAIT_FRAMES[idx];
-            text.replaceLastParagraph(waitingText);
+                } catch (Throwable ignored) { }
+                String displayText = (speaker != null && !speaker.isEmpty())
+                    ? speaker + ": " + partial
+                    : partial;
+                text.replaceLastParagraph(displayText);
+                partialTextRendered.set(true);
+            } else {
+                // No partial text yet — show animated waiting dots
+                int idx = ((int) (waitTimer / 0.2f)) % WAIT_FRAMES.length;
+                String npcName = null;
+                try {
+                    if (ctx != null) {
+                        if (ctx.person != null) npcName = ctx.person.getNameString();
+                        else if (ctx.entity != null) npcName = ctx.entity.getName();
+                    }
+                } catch (Throwable ignored) { }
+                String waitingText = (npcName != null && !npcName.isEmpty())
+                    ? npcName + " is thinking " + WAIT_FRAMES[idx]
+                    : "Starlogue is processing your message " + WAIT_FRAMES[idx];
+                text.replaceLastParagraph(waitingText);
+            }
         }
         // Always mirror status on the option row (some builds rarely refresh text-panel animations).
         try {
@@ -271,16 +418,26 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             state = State.IDLE;
             waitTimer = 0f;
             pendingUserMessage = null;
+            partialTextAccum.set(null);
+            partialTextRendered.set(false);
             ConversationAuditLog.logToolCall(conversationId, "", null, "llm_error", describe(err));
             reportError(friendlyLlmFailure(err));
             return;
         }
 
         if (waitTimer > 30f) {
-            log.warn("Starlogue: LLM timeout");
+            log.warn("Starlogue: LLM timeout — cancelling background dispatch to avoid stale response");
+            // Cancel the in-flight dispatch so an orphaned response can't surface as the
+            // answer to the player's next message. Mirrors the End-button abort path above.
+            dispatcher.cancel();
+            if (mcpBridge != null) {
+                mcpBridge.cancelAll();
+            }
             state = State.IDLE;
             waitTimer = 0f;
             pendingUserMessage = null;
+            partialTextAccum.set(null);
+            partialTextRendered.set(false);
             ConversationAuditLog.logToolCall(conversationId, "", null, "llm_timeout", "30s timeout");
             reportError("LLM call timed out after 30s. Check that your endpoint/model is reachable.");
         }
@@ -395,14 +552,21 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private void sendToLLMImpl(String userMessage) {
         LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
-        String configError = validateConfig(cfg);
-        if (configError != null) {
-            reportError(configError);
-            return;
+        // For claude_cli the session is already started (and preflight passed in init()).
+        // Skip the API-key validation — claude_cli doesn't use an API key.
+        if (llmSession == null) {
+            String configError = validateConfig(cfg);
+            if (configError != null) {
+                reportError(configError);
+                return;
+            }
         }
 
         state = State.WAITING;
         waitTimer = 0f;
+        // Reset partial-text accumulator for this new request (C-7)
+        partialTextAccum.set(null);
+        partialTextRendered.set(false);
         text.addParagraph("Starlogue is processing your message -");
         inputFieldIsLatest = false;
         pendingUserMessage = userMessage;
@@ -457,9 +621,25 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         }
 
         // Delegate background dispatch + retry to LlmDispatcher.
-        // ProviderFactory supplies all provider-wiring; dialog plugin stays free of new XxxClient() calls.
+        // For claude_cli: use the pre-built session client so we don't re-create the MCP server.
+        // For all other providers: ProviderFactory creates the client fresh each call.
         final LLMRequest baseRequest = new LLMRequest(messages, tools, first.model, temp, maxTokens);
-        dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
+
+        // Register partial-text listener for streaming (C-7).
+        // The listener is a no-op for non-CLI clients.
+        dispatcher.setPartialTextListener(delta -> {
+            // Invoked from background thread — safe to update AtomicReference
+            String prev = partialTextAccum.get();
+            partialTextAccum.set(prev == null ? delta : prev + delta);
+        });
+
+        if (llmSession != null) {
+            // claude_cli: single-backend, fixed client from the open session
+            final LLMClient sessionClient = llmSession.client();
+            dispatcher.dispatch(baseRequest, backends, b -> sessionClient);
+        } else {
+            dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
+        }
     }
 
     private void displayResponse(LLMResponse response) {
@@ -467,11 +647,22 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         String speaker = ctx.speakerName != null
             ? ctx.speakerName
             : (ctx.person != null ? ctx.person.getNameString() : "???");
+        // C-7: if partial text was already rendered in the dialog (via streaming), the panel
+        // already shows the full assistant text — just finalize in place. Only call
+        // replaceLastParagraph to add the speaker prefix if we hadn't already prefixed it.
         if (content != null && !content.isBlank()) {
-            text.replaceLastParagraph(speaker + ": " + content);
+            if (partialTextRendered.get()) {
+                // Partial text already visible in panel with speaker prefix — no double-render needed.
+                // The last paragraph already has "Speaker: <full text>" from advance(); leave it.
+            } else {
+                text.replaceLastParagraph(speaker + ": " + content);
+            }
         } else {
             text.replaceLastParagraph(""); // tool-only response
         }
+        // Reset streaming state
+        partialTextAccum.set(null);
+        partialTextRendered.set(false);
         ConversationAuditLog.logAssistantMessage(conversationId,
             content != null ? content : "",
             response.toolCalls != null ? response.toolCalls.size() : 0);
@@ -658,6 +849,8 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private String validateBackendOption(LlmBackendConfig.BackendOption b) {
         if (b == null) return "entry is null.";
+        // claude_cli doesn't use model/apiKey fields from BackendOption — skip validation
+        if ("claude_cli".equals(b.provider)) return null;
         if (b.model == null || b.model.isEmpty()) {
             return "model is empty. Set starlogue_model.";
         }
@@ -746,12 +939,24 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return "LLM call failed: " + describe(e);
     }
 
+    /** Closes the LLM session (stops MCP server etc.) if one is open. Idempotent. */
+    private void closeSession() {
+        if (llmSession != null) {
+            try { llmSession.close(); } catch (Throwable t) {
+                log.warn("Starlogue: error closing LLM session", t);
+            }
+            llmSession = null;
+            mcpBridge = null;
+        }
+    }
+
     /** Called on any unrecoverable error. Cleans up and exits to vanilla dialog flow. */
     private void failSafe() {
         state = State.ERROR;
         // Drain any in-flight dispatcher results so they don't surface in a future dialog.
         dispatcher.poll();
         dispatcher.pollError();
+        closeSession();
         closeConversationAudit("failsafe");
         StarlogueAPI.clearCurrentContext();
         if (dialog != null) dialog.dismiss();

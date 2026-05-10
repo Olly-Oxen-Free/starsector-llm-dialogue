@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Owns the background-thread LLM dispatch and backend-fallback retry chain.
@@ -38,6 +39,27 @@ public class LlmDispatcher {
     private final AtomicReference<Exception> pendingError = new AtomicReference<>(null);
 
     /**
+     * Optional partial-text listener (C-7). Written from any thread; invoked on the
+     * background dispatch thread. The dialog plugin registers this so it can render
+     * streaming deltas from {@link ClaudeCliClient} while state == WAITING.
+     * Default: no-op.
+     */
+    private volatile Consumer<String> partialTextListener = delta -> {};
+
+    /**
+     * Register a listener that receives incremental text deltas as they arrive from
+     * the underlying client. Only {@link ClaudeCliClient} actually emits deltas; all
+     * other providers leave this as a no-op. Safe to call from any thread before
+     * {@link #dispatch} is called.
+     */
+    public void setPartialTextListener(Consumer<String> listener) {
+        this.partialTextListener = (listener != null) ? listener : delta -> {};
+    }
+
+    /** Cancel any in-flight CLI subprocess (C-9). */
+    private volatile LLMClient currentClient = null;
+
+    /**
      * Starts a daemon thread that iterates {@code backends} in order, attempting each
      * until one succeeds. On success, stores the response in {@link #pending}. On total
      * failure (all backends exhausted), stores the aggregate error in {@link #pendingError}.
@@ -61,10 +83,17 @@ public class LlmDispatcher {
                         backend.model, baseRequest.temperature, baseRequest.maxTokens);
                     try {
                         LLMClient client = factory.create(backend);
+                        // Wire partial-text listener for CLI streaming (C-7)
+                        if (client instanceof ClaudeCliClient) {
+                            ((ClaudeCliClient) client).setPartialTextListener(partialTextListener);
+                        }
+                        currentClient = client;
                         LLMResponse response = completeWithBackendRetry(client, backend, request);
+                        currentClient = null;
                         pending.set(response);
                         return;
                     } catch (Exception e) {
+                        currentClient = null;
                         String msg = e.getMessage() != null ? e.getMessage() : describeThrowable(e);
                         if (attemptErrors.length() > 0) attemptErrors.append(" | ");
                         attemptErrors.append("#").append(i + 1).append(" ")
@@ -100,6 +129,19 @@ public class LlmDispatcher {
     public Optional<Exception> pollError() {
         Exception e = pendingError.getAndSet(null);
         return Optional.ofNullable(e);
+    }
+
+    /**
+     * Cancel any in-flight LLM request (C-9). If the active client is a
+     * {@link ClaudeCliClient}, the subprocess is killed within ~1s.
+     * Safe to call from the game thread at any time.
+     */
+    public void cancel() {
+        LLMClient c = currentClient;
+        if (c instanceof ClaudeCliClient) {
+            log.info("LlmDispatcher.cancel(): aborting ClaudeCliClient subprocess");
+            ((ClaudeCliClient) c).abort();
+        }
     }
 
     // ── Retry chain ───────────────────────────────────────────────────────
