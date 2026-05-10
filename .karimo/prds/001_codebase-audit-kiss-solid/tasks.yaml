@@ -1,0 +1,356 @@
+prd: codebase-audit-kiss-solid
+created: 2026-05-09
+
+tasks:
+  - id: T-1
+    title: "Fix hard LunaLib import in rep-adjust actions"
+    priority: must
+    complexity: 2
+    depends_on: []
+    files:
+      - src/starlogue/action/fleet/AdjustFactionRelAction.java
+      - src/starlogue/action/fleet/AdjustIndividualRelAction.java
+    description: |
+      Remove the unguarded `import lunalib.lunaSettings.LunaSettings;` from both
+      action files. Route any LunaLib reads through `config/LunaSettingHelper`,
+      which already guards class presence with `Class.forName` + try/catch.
+    acceptance:
+      - Mod loads with LunaLib uninstalled (no `NoClassDefFoundError`).
+      - Both actions execute correctly when LunaLib is present.
+      - No new try/catch boilerplate in the action classes themselves — go through helper.
+
+  - id: T-2
+    title: "Add repLevel null guards uniformly across fleet actions"
+    priority: must
+    complexity: 2
+    depends_on: []
+    files:
+      - src/starlogue/action/fleet/*.java
+    description: |
+      Audit every fleet action calling `ctx.repLevel.isAtBest(...)` or
+      `ctx.repLevel.isAtWorst(...)`. Apply the existing pattern from the actions
+      that already guard correctly: `if (ctx.repLevel == null) return false;`
+      in `isAvailable`, and treat null as "neutral" in `execute`.
+    acceptance:
+      - No fleet action throws NPE when `ctx.repLevel == null`.
+      - All ~16 rep-touching actions guard consistently.
+
+  - id: T-3
+    title: "Bump build flags to Java 17"
+    priority: must
+    complexity: 2
+    depends_on: []
+    files:
+      - build.sh
+    description: |
+      Change `-source 8 -target 8` to `-source 17 -target 17` in `build.sh`.
+      Verify `./build.sh` still produces `jars/Starlogue.jar` cleanly. Do not
+      introduce new syntax in this task — that comes in subsequent refactors.
+    acceptance:
+      - `./build.sh` exits 0.
+      - `jars/Starlogue.jar` produced.
+      - No source-level changes outside `build.sh`.
+
+  - id: T-4
+    title: "Apply asFloat coercion in rep-adjust actions"
+    priority: should
+    complexity: 2
+    depends_on: [T-1]
+    files:
+      - src/starlogue/action/fleet/AdjustFactionRelAction.java
+      - src/starlogue/action/fleet/AdjustIndividualRelAction.java
+    description: |
+      Mirror the `asFloat(Object)` defensive helper used by resource-transfer
+      actions. LLMs frequently return numeric parameters as JSON strings;
+      rep-adjust actions silently fail today.
+    acceptance:
+      - String-typed numeric parameters coerce correctly.
+      - Existing numeric path unchanged.
+
+  - id: T-5
+    title: "Extract LlmDispatcher from StarlogueDialogPlugin"
+    priority: should
+    complexity: 5
+    depends_on: [T-3]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/llm/LlmDispatcher.java (new)
+    description: |
+      Extract the background-thread LLM dispatch + retry-with-backend-fallback
+      logic into a new `LlmDispatcher` class. Owns: the daemon Thread, the
+      `AtomicReference<LLMResponse> pending`, the retry chain. Exposes:
+      `dispatch(LLMRequest)` and `poll()` returning Optional<LLMResponse>.
+      Game-thread polling stays in the dialog plugin.
+    acceptance:
+      - Dialog plugin no longer constructs Threads directly.
+      - LLM dispatch + retry isolated in `LlmDispatcher`.
+      - Smoke playtest: open dialog, send message, receive response, retry on backend failure.
+      - No regression in conversation flow.
+
+  - id: T-6
+    title: "Extract ProviderFactory from StarlogueDialogPlugin"
+    priority: should
+    complexity: 3
+    depends_on: [T-5]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/llm/ProviderFactory.java (new)
+    description: |
+      Move `createClientForBackend` and the per-provider switch into
+      `ProviderFactory.create(LlmBackendConfig)`. Inject factory into
+      `LlmDispatcher`. Removes provider knowledge from the dialog plugin.
+    acceptance:
+      - Dialog plugin contains no `new OpenAIClient()`-style references.
+      - All four providers (OpenAI, Anthropic, OpenRouter, Xai) routed through factory.
+      - Smoke test: each provider selectable in LunaSettings still works.
+
+  - id: T-7
+    title: "Extract FleetContextBuilder shared helper"
+    priority: should
+    complexity: 3
+    depends_on: []
+    files:
+      - src/starlogue/engine/FleetContextBuilder.java (new)
+      - src/starlogue/provider/FleetCaptainPlugin.java
+      - src/starlogue/starlords/StarLordPlugin.java
+    description: |
+      Extract the duplicated fleet-context section (StarLordPlugin.java:37–75
+      ↔ FleetCaptainPlugin equivalent) into `engine/FleetContextBuilder`.
+      `StarLordPlugin` calls helper, then appends its lord-specific
+      additions.
+    acceptance:
+      - No duplication of fleet stat / officer / cargo summary lines.
+      - Both providers produce equivalent context for the shared portion.
+      - Lord-specific additions remain in `StarLordPlugin`.
+
+  - id: T-8
+    title: "Extract defaultFleetActions() helper"
+    priority: should
+    complexity: 2
+    depends_on: [T-7]
+    files:
+      - src/starlogue/provider/FleetCaptainPlugin.java
+      - src/starlogue/starlords/StarLordPlugin.java
+      - src/starlogue/action/fleet/DefaultFleetActions.java (new)
+    description: |
+      The first 28 entries of `StarLordPlugin.getActions()` duplicate
+      `FleetCaptainPlugin.getActions()`. Extract a static
+      `DefaultFleetActions.list()` returning the shared list. Both providers
+      call it; `StarLordPlugin` appends lord-specific actions.
+    acceptance:
+      - One source of truth for the default fleet action list.
+      - `StarLordPlugin` shows lord actions in addition to the default set.
+
+  - id: T-9
+    title: "HttpClient singleton in LLM clients"
+    priority: should
+    complexity: 2
+    depends_on: []
+    files:
+      - src/starlogue/llm/OpenAIClient.java
+      - src/starlogue/llm/AnthropicClient.java
+    description: |
+      Make `HttpClient` a `private static final` shared instance per client
+      class. Auth header stays on `HttpRequest`, never the client. Reduces
+      per-turn allocation and warms the connection pool.
+    acceptance:
+      - `HttpClient` allocated once per JVM lifetime per client class.
+      - API keys still rotatable mid-session via per-request auth header.
+
+  - id: T-10
+    title: "Wire up StarlogueAPI accessors"
+    priority: should
+    complexity: 2
+    depends_on: []
+    files:
+      - src/starlogue/api/StarlogueAPI.java
+    description: |
+      Replace the two `return null;` stubs at lines 144 and 148 with real
+      implementations returning the live `MemoryEngine` and
+      `FactionProfileRegistry` instances. Document them in the API class
+      Javadoc as extension points for contributor plugins.
+    acceptance:
+      - `getMemoryEngine()` returns the live engine instance.
+      - `getFactionProfileRegistry()` returns the live registry.
+      - Existing contributor interfaces continue to function unchanged.
+
+  - id: T-11
+    title: "Consolidate LunaSettingHelper duplication + extract JsonUtils"
+    priority: could
+    complexity: 3
+    depends_on: [T-5]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/config/LunaSettingHelper.java
+      - src/starlogue/llm/JsonUtils.java (new)
+      - src/starlogue/llm/OpenAIClient.java
+      - src/starlogue/llm/AnthropicClient.java
+    description: |
+      Two cleanups bundled. (a) Remove the duplicated LunaLib safe-get logic
+      from the dialog plugin; route through `LunaSettingHelper`. (b) Extract
+      `mapToJson` / `deepToJson` (identical between OpenAIClient and
+      AnthropicClient) into a `JsonUtils` package-private helper.
+    acceptance:
+      - One LunaLib safe-get implementation in the codebase.
+      - One JSON serialization helper.
+
+  - id: T-12
+    title: "Parameterize PersonalityComposer + handle Nex placeholders"
+    priority: could
+    complexity: 3
+    depends_on: []
+    files:
+      - src/starlogue/personality/PersonalityComposer.java
+      - src/starlogue/compat/nex/NexStarlogueCompat.java
+    description: |
+      Two cleanups bundled. (a) Parameterize the three near-identical compose
+      methods in `PersonalityComposer.java:101-124` — they only differ in
+      their "base" string source. (b) Decide on the three Nexerelin placeholder
+      action inner classes: implement them with real behaviour OR remove them
+      from the registered action list so they don't waste tool slots.
+    acceptance:
+      - One compose method, parameterized by a base supplier.
+      - Nex compat actions either do real work or are unregistered.
+
+  - id: T-13
+    title: "UX: API-key preflight + in-character dot text + option tooltips + lightweight test runner"
+    priority: could
+    complexity: 4
+    depends_on: [T-5]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/config/StarlogueCredentials.java
+      - test/starlogue/TestRunner.java (new)
+      - build.sh
+    description: |
+      Rescoped 2026-05-10: original "animated dots" subtask dropped — dots
+      already cycle via WAIT_FRAMES at StarlogueDialogPlugin lines 200-208.
+      Replaced with in-character text + tooltip work.
+
+      (a) On dialog open, check for a usable API key; if none, show a
+      friendly "Configure API key in LunaSettings" message instead of
+      failing on first send.
+      (b) Replace generic "Starlogue is processing your message ..." with
+      in-character text using the NPC's display name, e.g. "{Name} is
+      thinking ...". Pull from ctx.person or ctx.entity.getName() with safe
+      fallback to current generic.
+      (c) Wire optionMousedOver (currently empty stub at line 190) to
+      surface a one-line description for Send / End options.
+      (d) Add test/starlogue/TestRunner.java with a main() that
+      reflectively invokes testXxx-named methods on the three existing
+      test classes; wire ./build.sh test to invoke it.
+    acceptance:
+      - Missing API key surfaces a clear message at dialog open.
+      - Waiting indicator uses the NPC's name when available.
+      - Send / End options have hover-help text.
+      - ./build.sh test runs all three test classes and reports pass/fail.
+      - All three existing tests pass.
+
+  # ─── WAVE 4 — Combat & Engagement Fixes (added 2026-05-10) ───
+
+  - id: T-14
+    title: "Make AttackAction actually hostile + add endsConversation() hook"
+    priority: must
+    complexity: 4
+    depends_on: [T-5]
+    files:
+      - src/starlogue/action/StarlogueAction.java
+      - src/starlogue/action/fleet/AttackAction.java
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+    description: |
+      Currently AttackAction.execute() only calls clearAssignments() +
+      addAssignment(INTERCEPT, playerFleet, 1f). This gets overridden by
+      the post-conversation setNoEngaging(2.5f) cooldown applied in
+      exitConversation(), so the fleet never actually engages.
+
+      Three changes:
+
+      (1) StarlogueAction interface gains a default method
+          `default boolean endsConversation() { return false; }`.
+          AttackAction.endsConversation() returns true.
+
+      (2) executeToolCall() in StarlogueDialogPlugin: after running an
+          action where endsConversation() is true, call failSafe() /
+          dialog.dismiss() immediately and SKIP the setNoEngaging cooldown
+          branch in exitConversation for that case.
+
+      (3) AttackAction.execute() flips memory flags so Starsector treats
+          the fleet as actually hostile:
+            - ctx.fleet.getMemoryWithoutUpdate().set(MemFlags.MEMORY_KEY_PURSUE_PLAYER, true, ~3 days)
+            - clear any existing no-engage timer: ctx.fleet.setNoEngaging(0f); playerFleet.setNoEngaging(0f)
+            - keep INTERCEPT assignment.
+
+      The setNoEngaging(2.5f) peaceful-exit cooldown applies ONLY when no
+      endsConversation()-true action ran during the session.
+    acceptance:
+      - Saying "I attack you" -> AI invokes attack tool -> fleet pursues player on dialog close.
+      - Combat actually starts (manual playtest: wait after dialog dismiss; fleet should chase).
+      - Peaceful conversations still get the 2.5s cooldown.
+      - endsConversation() default returns false; only AttackAction overrides initially.
+
+  - id: T-15
+    title: "Fix fake-engagement persistence on dialog exit"
+    priority: must
+    complexity: 5
+    depends_on: [T-5, T-14]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+      - src/starlogue/ui/OpenChannelCommand.java
+    description: |
+      Starlogue replaces the parent dialog plugin via dialog.setPlugin() in
+      OpenChannelCommand. The parent dialog was opened by Starsector's
+      normal fleet-encounter machinery, so the encounter is real at sector
+      level — nearby AI fleets see the engagement and reinforce, even when
+      the conversation is purely peaceful.
+
+      Required investigation + fix (high risk — touches game-thread state):
+
+      (1) On peaceful exit (no tool call OR no endsConversation()-true
+          action), call BattleAPI.disengage() or equivalent on the parent
+          encounter's BattleAPI. Look up via ctx.fleet.getBattle() (may be
+          null if no battle) and Misc.giveStandardReturnToSourceAssignments(ctx.fleet, true).
+
+      (2) Test whether dialog.dismiss() versus setPlugin(priorPlugin) +
+          restoreSavedOptions() differ in how Starsector reports the
+          encounter state to nearby fleets. If dismiss() is cleaner, use
+          it on peaceful exit too — accept the tradeoff that the player
+          loses the parent menu.
+
+      (3) Extend the no-engage cooldown to nearby player-allied fleets in
+          range so they don't pile in: iterate
+          Global.getSector().getCurrentLocation().getFleets() within
+          (e.g.) 2000su, filter to non-hostile-to-player-faction, and apply
+          setNoEngaging(5f) to each.
+
+      Manual playtest is the only real verification — automate as much
+      precondition logging as possible (audit log entries with battle-state,
+      nearby-fleet count, engagement assignments).
+    acceptance:
+      - After peaceful conversation exit, no other AI fleet pursues into combat with the conversed fleet.
+      - Player can leave the area without auto-engagement.
+      - Hostile conversations (T-14) still trigger combat correctly.
+      - Audit log records battle-state on entry and exit.
+
+  - id: T-16
+    title: "UX polish: abort current LLM call + dynamic option tooltips"
+    priority: should
+    complexity: 3
+    depends_on: [T-5]
+    files:
+      - src/starlogue/ui/StarlogueDialogPlugin.java
+    description: |
+      (a) During WAITING state, replace the End option with an "Abort
+      request" option. Selecting it sets a volatile flag on the LLM
+      dispatcher (T-5) that causes the in-flight HTTP response to be
+      ignored on arrival; UI returns to IDLE with "[Request cancelled]"
+      paragraph.
+
+      (b) Wire optionMousedOver for the dynamic response options Starlogue
+      surfaces — when the LLM's reply suggests multiple branches as inline
+      option keys, hovering each shows summary text.
+
+      (c) Audit-log the abort with reason "user_aborted".
+    acceptance:
+      - User can cancel a slow LLM call without exiting the dialog.
+      - Hover tooltips appear on Send / End / Abort and any dynamic options.
+      - Abort doesn't cause stale tool calls to apply if the response arrived after cancel.

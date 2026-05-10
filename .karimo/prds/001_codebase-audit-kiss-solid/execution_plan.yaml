@@ -1,0 +1,45 @@
+prd: codebase-audit-kiss-solid
+strategy: pr-per-wave
+created: 2026-05-09
+revised: 2026-05-10  # Wave 4 added; T-13 rescoped
+
+waves:
+  - wave: 1
+    name: "Bugs + foundation"
+    rationale: "No interdependencies; lands all must-fixes plus standalone refactors. Stable base for wave 2."
+    tasks: [T-1, T-2, T-3, T-7, T-9, T-10, T-12]
+    merge_pr: "PR #1 — wave 1 (bugs, java17, dedup, api wiring)"
+    gate: "Build passes; mod loads with and without LunaLib; smoke playtest of one fleet conversation."
+    status: in-review  # PR #1 open; greptile P1 fix pushed
+
+  - wave: 2
+    name: "Architecture extraction"
+    rationale: "Depends on T-3 (Java 17) and T-7 (FleetContextBuilder). Touches the god class — high regression risk."
+    tasks: [T-4, T-5, T-6, T-8]
+    merge_pr: "PR #2 — wave 2 (LlmDispatcher, ProviderFactory, default fleet actions, asFloat coercion)"
+    gate: "Build passes; smoke playtest after T-5 and again after T-6; full conversation with retry-on-error verified."
+
+  - wave: 3
+    name: "Polish + UX + tests"
+    rationale: "Depends on T-5 (dispatcher exists) for clean UX hooks. Lowest risk — mostly additive."
+    tasks: [T-11, T-13]
+    merge_pr: "PR #3 — wave 3 (cleanup consolidation, in-character dot text, tooltips, test runner)"
+    gate: "Build passes; ./build.sh test reports pass; manual UX check on missing-API-key path."
+
+  - wave: 4
+    name: "Combat & engagement fixes"
+    rationale: |
+      Two real gameplay bugs reported 2026-05-10:
+      (a) AttackAction tool fires but fleet never actually attacks (overridden by exit-cooldown).
+      (b) Peaceful conversation leaves fake engagement state — nearby fleets reinforce as if combat is happening.
+      Plus T-16 abort/tooltip UX polish. Depends on T-5 (LlmDispatcher gives clean hook for abort) and T-14 (interface change must precede T-15 engagement teardown logic).
+    tasks: [T-14, T-15, T-16]
+    merge_pr: "PR #4 — wave 4 (hostile fix, engagement teardown, abort)"
+    gate: "Build passes; playtest hostile path (say 'I attack you' → fleet pursues); playtest peaceful path (exit conversation → no reinforcement pile-on)."
+
+longest_chain: "T-3 → T-5 → T-14 → T-15"
+
+complexity_total: 47  # was 35; +12 from T-14/T-15/T-16
+must_count: 5         # was 3; +T-14, +T-15
+should_count: 8       # was 7; +T-16
+could_count: 3        # unchanged

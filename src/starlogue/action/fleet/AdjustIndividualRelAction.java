@@ -2,8 +2,8 @@ package starlogue.action.fleet;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
-import lunalib.lunaSettings.LunaSettings;
 import starlogue.action.StarlogueAction;
+import starlogue.config.LunaSettingHelper;
 import starlogue.engine.GameContext;
 import starlogue.memory.MemoryEngine;
 import starlogue.memory.MemoryEvent;
@@ -48,7 +48,9 @@ public class AdjustIndividualRelAction implements StarlogueAction {
 
     @Override
     public void execute(GameContext ctx, Map<String, Object> args) {
-        double raw = ((Number) args.get("delta")).doubleValue();
+        Object rawObj = args.get("delta");
+        if (rawObj == null) return;
+        double raw = asFloat(rawObj);
         float delta = (float) Math.max(-0.10, Math.min(0.10, raw));
 
         boolean isPositive = delta > 0;
@@ -57,10 +59,9 @@ public class AdjustIndividualRelAction implements StarlogueAction {
         MemoryAPI playerMem = Global.getSector().getPlayerFleet().getMemory();
         float used = playerMem.contains(capKey) ? playerMem.getFloat(capKey) : 0f;
 
-        Double capDbl = isPositive
-            ? LunaSettings.getDouble("starlogue", "starlogue_rep_gain_cap")
-            : LunaSettings.getDouble("starlogue", "starlogue_rep_loss_cap");
-        float cap = capDbl != null ? capDbl.floatValue() : 20f;
+        float cap = (float) (isPositive
+            ? LunaSettingHelper.getDouble("starlogue_rep_gain_cap", 20.0)
+            : LunaSettingHelper.getDouble("starlogue_rep_loss_cap", 20.0));
         float allowed = cap - Math.abs(used);
         if (allowed <= 0f) {
             log.debug("Starlogue: monthly rep cap hit for " + (isPositive ? "gain" : "loss"));
@@ -80,4 +81,14 @@ public class AdjustIndividualRelAction implements StarlogueAction {
     }
 
     @Override public String narrativeNote() { return null; }
+
+    /** Coerces numeric or string-typed JSON values to float. LLMs sometimes return numbers as strings. */
+    private static float asFloat(Object val) {
+        if (val instanceof Number) return ((Number) val).floatValue();
+        try {
+            return Float.parseFloat(String.valueOf(val));
+        } catch (Throwable t) {
+            return 0f;
+        }
+    }
 }

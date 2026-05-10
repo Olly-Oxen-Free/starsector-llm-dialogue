@@ -33,14 +33,15 @@ public class AnthropicClient implements LLMClient {
     private static final String ENDPOINT = "https://api.anthropic.com/v1/messages";
     private static final String ANTHROPIC_VERSION = "2023-06-01";
 
+    /** Shared HttpClient — allocated once per JVM lifetime. Thread-safe per Java spec. */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build();
+
     private final String apiKey;
-    private final HttpClient http;
 
     public AnthropicClient(String apiKey) {
         this.apiKey = apiKey;
-        this.http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
     }
 
     @Override
@@ -58,7 +59,7 @@ public class AnthropicClient implements LLMClient {
 
         log.debug("Starlogue → Anthropic endpoint: " + ENDPOINT);
 
-        HttpResponse<String> response = http.send(httpRequest,
+        HttpResponse<String> response = HTTP.send(httpRequest,
                                                   HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
@@ -136,7 +137,7 @@ public class AnthropicClient implements LLMClient {
         // parameters → input_schema (same JSON Schema object)
         Object params = fn.get("parameters");
         if (params instanceof Map) {
-            anthropicTool.put("input_schema", deepToJson((Map<String, Object>) params));
+            anthropicTool.put("input_schema", JsonUtils.deepToJson((Map<String, Object>) params));
         } else {
             // Empty schema fallback
             JSONObject emptySchema = new JSONObject();
@@ -146,27 +147,5 @@ public class AnthropicClient implements LLMClient {
         }
 
         return anthropicTool;
-    }
-
-    private JSONObject mapToJson(Map<String, Object> map) throws org.json.JSONException {
-        JSONObject obj = new JSONObject();
-        for (Map.Entry<String, Object> e : map.entrySet()) {
-            obj.put(e.getKey(), deepToJson(e.getValue()));
-        }
-        return obj;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object deepToJson(Object value) throws org.json.JSONException {
-        if (value instanceof Map) {
-            return mapToJson((Map<String, Object>) value);
-        } else if (value instanceof List) {
-            JSONArray arr = new JSONArray();
-            for (Object item : (List<?>) value) {
-                arr.put(deepToJson(item));
-            }
-            return arr;
-        }
-        return value;
     }
 }

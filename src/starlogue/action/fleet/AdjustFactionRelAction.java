@@ -2,8 +2,8 @@ package starlogue.action.fleet;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
-import lunalib.lunaSettings.LunaSettings;
 import starlogue.action.StarlogueAction;
+import starlogue.config.LunaSettingHelper;
 import starlogue.engine.GameContext;
 import starlogue.memory.MemoryEngine;
 import starlogue.memory.MemoryEvent;
@@ -57,7 +57,7 @@ public class AdjustFactionRelAction implements StarlogueAction {
     public void execute(GameContext ctx, Map<String, Object> args) {
         Object rawObj = args.get("delta");
         if (rawObj == null) return;
-        double raw = ((Number) rawObj).doubleValue();
+        double raw = asFloat(rawObj);
         // Faction-level deltas are smaller than individual — max ±0.08
         float delta = (float) Math.max(-0.08, Math.min(0.08, raw));
 
@@ -67,10 +67,9 @@ public class AdjustFactionRelAction implements StarlogueAction {
         MemoryAPI playerMem = Global.getSector().getPlayerFleet().getMemory();
         float used = playerMem.contains(capKey) ? playerMem.getFloat(capKey) : 0f;
 
-        Double capDbl = isPositive
-            ? LunaSettings.getDouble("starlogue", "starlogue_rep_gain_cap")
-            : LunaSettings.getDouble("starlogue", "starlogue_rep_loss_cap");
-        float cap = capDbl != null ? capDbl.floatValue() : 20f;
+        float cap = (float) (isPositive
+            ? LunaSettingHelper.getDouble("starlogue_rep_gain_cap", 20.0)
+            : LunaSettingHelper.getDouble("starlogue_rep_loss_cap", 20.0));
 
         float allowed = cap - Math.abs(used);
         if (allowed <= 0f) {
@@ -91,4 +90,14 @@ public class AdjustFactionRelAction implements StarlogueAction {
     }
 
     @Override public String narrativeNote() { return null; }
+
+    /** Coerces numeric or string-typed JSON values to float. LLMs sometimes return numbers as strings. */
+    private static float asFloat(Object val) {
+        if (val instanceof Number) return ((Number) val).floatValue();
+        try {
+            return Float.parseFloat(String.valueOf(val));
+        } catch (Throwable t) {
+            return 0f;
+        }
+    }
 }

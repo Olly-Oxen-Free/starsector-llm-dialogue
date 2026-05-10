@@ -14,9 +14,13 @@ public class OpenAIClient implements LLMClient {
 
     private static final Logger log = Logger.getLogger(OpenAIClient.class);
 
+    /** Shared HttpClient — allocated once per JVM lifetime. Thread-safe per Java spec. */
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build();
+
     private final String endpoint;
     private final String apiKey;
-    private final HttpClient http;
 
     public OpenAIClient(String baseUrl, String apiKey) {
         // Normalise endpoint to always point at /chat/completions
@@ -24,9 +28,6 @@ public class OpenAIClient implements LLMClient {
         if (url.endsWith("/")) url = url.substring(0, url.length() - 1);
         this.endpoint = url.endsWith("/chat/completions") ? url : url + "/chat/completions";
         this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
     }
 
     /**
@@ -63,7 +64,7 @@ public class OpenAIClient implements LLMClient {
 
         log.debug("Starlogue → LLM endpoint: " + endpoint);
 
-        HttpResponse<String> response = http.send(builder.build(),
+        HttpResponse<String> response = HTTP.send(builder.build(),
                                                   HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
@@ -126,41 +127,19 @@ public class OpenAIClient implements LLMClient {
 
         JSONArray messages = new JSONArray();
         for (Map<String, Object> msg : request.messages) {
-            messages.put(mapToJson(msg));
+            messages.put(JsonUtils.mapToJson(msg));
         }
         body.put("messages", messages);
 
         if (request.tools != null && !request.tools.isEmpty()) {
             JSONArray tools = new JSONArray();
             for (Map<String, Object> tool : request.tools) {
-                tools.put(deepToJson(tool));
+                tools.put(JsonUtils.deepToJson(tool));
             }
             body.put("tools", tools);
             body.put("tool_choice", "auto");
         }
 
         return body;
-    }
-
-    private JSONObject mapToJson(Map<String, Object> map) throws org.json.JSONException {
-        JSONObject obj = new JSONObject();
-        for (Map.Entry<String, Object> e : map.entrySet()) {
-            obj.put(e.getKey(), deepToJson(e.getValue()));
-        }
-        return obj;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object deepToJson(Object value) throws org.json.JSONException {
-        if (value instanceof Map) {
-            return mapToJson((Map<String, Object>) value);
-        } else if (value instanceof List) {
-            JSONArray arr = new JSONArray();
-            for (Object item : (List<?>) value) {
-                arr.put(deepToJson(item));
-            }
-            return arr;
-        }
-        return value;
     }
 }

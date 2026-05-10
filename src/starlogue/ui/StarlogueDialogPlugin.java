@@ -13,13 +13,13 @@ import starlogue.engine.*;
 import starlogue.llm.*;
 import starlogue.api.StarlogueAPI;
 import starlogue.config.LlmBackendConfig;
+import starlogue.config.LunaSettingHelper;
 import starlogue.debug.ConversationAuditLog;
 import starlogue.debug.DebugSessionLog;
 import starlogue.provider.StarloguePlugin;
 import org.json.JSONObject;
 import org.apache.log4j.Logger;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
@@ -46,8 +46,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private enum State { IDLE, WAITING, ERROR }
     private State state = State.IDLE;
     private float waitTimer = 0f;
-    private final AtomicReference<LLMResponse> pending = new AtomicReference<LLMResponse>(null);
-    private final AtomicReference<Exception> pendingError = new AtomicReference<Exception>(null);
+    private final LlmDispatcher dispatcher = new LlmDispatcher();
     private String pendingUserMessage = null;
     private final String conversationId = ConversationAuditLog.newConversationId();
     private boolean conversationAuditClosed = false;
@@ -102,12 +101,23 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
                 : (ctx.person != null ? ctx.person.getNameString() : "the other side");
             text.addParagraph("Channel open. You are speaking with " + speaker + ".");
 
-            // Validate config before making the LLM call so misconfiguration is visible
-            // in-dialog instead of causing a silent dismiss.
+            // API-key preflight: validate config before making the LLM call so
+            // misconfiguration surfaces as a friendly in-dialog message rather than
+            // a silent dismiss or cryptic exception on first send.
             LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
             String configError = validateConfig(cfg);
             if (configError != null) {
-                reportError(configError);
+                // Surface a helpful hint about where to configure the key.
+                String providerHint = (cfg != null && cfg.provider != null && !cfg.provider.isEmpty())
+                    ? cfg.provider : "your LLM provider";
+                text.addParagraph("[Starlogue] API key is not configured for " + providerHint
+                    + ". Open LunaSettings (or edit saves/common/Starlogue_credentials.json)"
+                    + " and set starlogue_api_key, then re-open the channel.");
+                text.addParagraph("You can end the conversation and come back once the key is set.");
+                log.warn("Starlogue: API-key preflight failed — " + configError);
+                state = State.IDLE;
+                showMainOptions();
+                options.setEnabled(OPT_SEND, false);
                 return;
             }
             sendToLLM("(Conversation starts. Greet the player briefly and in character. One or two sentences only.)");
@@ -187,7 +197,27 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     }
 
     @Override
-    public void optionMousedOver(String optionText, Object optionData) {}
+    public void optionMousedOver(String optionText, Object optionData) {
+        // Surface a one-line description for the main Send / End options.
+        // Starsector's InteractionDialogAPI does not expose a stable tooltip API
+        // that works across all dialog contexts, so we use addPara on the text panel
+        // only when we have a useful hint to show.
+        if (dialog == null) return;
+        try {
+            if (OPT_SEND.equals(optionData)) {
+                dialog.getTextPanel().setFontSmallInsignia();
+                dialog.getTextPanel().addParagraph("Submit your message to " +
+                    (ctx != null && ctx.speakerName != null ? ctx.speakerName : "the other side") + ".");
+                dialog.getTextPanel().setFontInsignia();
+            } else if (OPT_END.equals(optionData)) {
+                dialog.getTextPanel().setFontSmallInsignia();
+                dialog.getTextPanel().addParagraph("Leave the conversation.");
+                dialog.getTextPanel().setFontInsignia();
+            }
+        } catch (Throwable ignored) {
+            // Tooltip display is best-effort; don't break dialog state if API unavailable.
+        }
+    }
 
     @Override
     public void advance(float amount) {
@@ -199,7 +229,21 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         // text field (input), replaceLastParagraph would clobber it.
         if (!inputFieldIsLatest) {
             int idx = ((int) (waitTimer / 0.2f)) % WAIT_FRAMES.length;
-            text.replaceLastParagraph("Starlogue is processing your message " + WAIT_FRAMES[idx]);
+            // In-character dot text: use the NPC's display name when available.
+            String npcName = null;
+            try {
+                if (ctx != null) {
+                    if (ctx.person != null) {
+                        npcName = ctx.person.getNameString();
+                    } else if (ctx.entity != null) {
+                        npcName = ctx.entity.getName();
+                    }
+                }
+            } catch (Throwable ignored) { }
+            String waitingText = (npcName != null && !npcName.isEmpty())
+                ? npcName + " is thinking " + WAIT_FRAMES[idx]
+                : "Starlogue is processing your message " + WAIT_FRAMES[idx];
+            text.replaceLastParagraph(waitingText);
         }
         // Always mirror status on the option row (some builds rarely refresh text-panel animations).
         try {
@@ -207,12 +251,12 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             options.setOptionText("⌛ Working… " + WAIT_FRAMES[idx], OPT_SEND);
         } catch (Throwable ignored) { }
 
-        LLMResponse response = pending.getAndSet(null);
-        if (response != null) {
+        java.util.Optional<LLMResponse> maybeResponse = dispatcher.poll();
+        if (maybeResponse.isPresent()) {
             state = State.IDLE;
             waitTimer = 0f;
             try {
-                displayResponse(response);
+                displayResponse(maybeResponse.get());
             } catch (Throwable e) {
                 log.error("Starlogue: displayResponse failed", e);
                 reportError("Failed to render LLM response: " + describe(e));
@@ -220,8 +264,9 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             return;
         }
 
-        Exception err = pendingError.getAndSet(null);
-        if (err != null) {
+        java.util.Optional<Exception> maybeError = dispatcher.pollError();
+        if (maybeError.isPresent()) {
+            Exception err = maybeError.get();
             log.error("Starlogue: LLM error", err);
             state = State.IDLE;
             waitTimer = 0f;
@@ -370,9 +415,9 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         // Single credentials snapshot (same parse for validate + request).
         final List<LlmBackendConfig.BackendOption> backends = cfg.backends;
         String model     = cfg.model;
-        float  temp      = safeGetFloat ("starlogue_temperature",  0.8f);
-        int    maxTokens = safeGetInt   ("starlogue_max_tokens",   300);
-        int    maxTurns  = safeGetInt   ("starlogue_history_turns", 10);
+        float  temp      = LunaSettingHelper.getFloat  ("starlogue_temperature",   0.8f);
+        int    maxTokens = LunaSettingHelper.getInt    ("starlogue_max_tokens",    300);
+        int    maxTurns  = LunaSettingHelper.getInt    ("starlogue_history_turns", 10);
 
         LlmBackendConfig.BackendOption first = backends.get(0);
         log.info("Starlogue: effective LLM settings — backends=" + backends.size()
@@ -407,36 +452,14 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         log.info("Starlogue: sending request — tools=" + tools.size()
             + " provider=" + first.provider + " model=" + first.model);
 
-        if (safeGetBoolean("starlogue_debug_prompts", false)) {
+        if (LunaSettingHelper.getBoolean("starlogue_debug_prompts", false)) {
             log.debug("Starlogue system prompt:\n" + systemPrompt);
         }
 
-        Thread t = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                StringBuilder attemptErrors = new StringBuilder();
-                for (int i = 0; i < backends.size(); i++) {
-                    LlmBackendConfig.BackendOption backend = backends.get(i);
-                    LLMRequest request = new LLMRequest(messages, tools, backend.model, temp, maxTokens);
-                    try {
-                        LLMResponse response = completeWithBackendRetry(createClientForBackend(backend), backend, request);
-                        pending.set(response);
-                        return;
-                    } catch (Exception e) {
-                        String msg = e.getMessage() != null ? e.getMessage() : describe(e);
-                        if (attemptErrors.length() > 0) attemptErrors.append(" | ");
-                        attemptErrors.append("#").append(i + 1).append(" ")
-                            .append(backend.provider).append("/")
-                            .append(backend.model).append(": ").append(msg);
-                        log.warn("Starlogue: backend attempt " + (i + 1) + "/" + backends.size()
-                            + " failed for provider=" + backend.provider + " model=" + backend.model, e);
-                    }
-                }
-                pendingError.set(new RuntimeException("All configured backends failed: " + attemptErrors.toString()));
-            }
-        });
-        t.setDaemon(true);
-        t.start();
+        // Delegate background dispatch + retry to LlmDispatcher.
+        // ProviderFactory supplies all provider-wiring; dialog plugin stays free of new XxxClient() calls.
+        final LLMRequest baseRequest = new LLMRequest(messages, tools, first.model, temp, maxTokens);
+        dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
     }
 
     private void displayResponse(LLMResponse response) {
@@ -467,7 +490,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         int toolCallCount = response.toolCalls.size();
         log.info("Starlogue: LLM response received — toolCalls=" + toolCallCount
             + " hasContent=" + (content != null && !content.isBlank()));
-        if (safeGetBoolean("starlogue_debug_tools", false)) {
+        if (LunaSettingHelper.getBoolean("starlogue_debug_tools", false)) {
             log.debug("Starlogue: " + toolCallCount + " tool call(s)");
         }
 
@@ -485,7 +508,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     }
 
     private void executeToolCall(LLMToolCall call) {
-        if (safeGetBoolean("starlogue_debug_tools", false)) {
+        if (LunaSettingHelper.getBoolean("starlogue_debug_tools", false)) {
             log.debug("Starlogue: tool call → " + call);
         }
 
@@ -649,69 +672,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return null;
     }
 
-    private LLMClient createClientForBackend(LlmBackendConfig.BackendOption b) {
-        if ("anthropic".equals(b.provider)) {
-            return new AnthropicClient(b.apiKey);
-        } else if ("openrouter".equals(b.provider)) {
-            return new OpenRouterClient(b.apiKey);
-        } else if ("xai".equals(b.provider)) {
-            return new XaiClient(b.apiKey, b.customEndpoint);
-        } else if ("openai".equals(b.provider)) {
-            return new OpenAIClient("https://api.openai.com/v1", b.apiKey);
-        } else if ("ollama".equals(b.provider)) {
-            return new OpenAIClient("http://localhost:11434/v1", b.apiKey);
-        }
-        return new OpenAIClient(b.customEndpoint, b.apiKey); // custom
-    }
-
-    private LLMResponse completeWithBackendRetry(LLMClient client,
-                                                 LlmBackendConfig.BackendOption backend,
-                                                 LLMRequest request) throws Exception {
-        try {
-            return client.complete(request);
-        } catch (Exception e) {
-            if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterNoTools(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryMode", "same-model-no-tools");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_TOOLLESS", "StarlogueDialogPlugin.sendToLLMImpl",
-                        "retry-without-tools", d.toString());
-                } catch (Throwable ignore) { }
-                log.warn("Starlogue: OpenRouter model does not support tool use; retrying once without tools");
-                LLMRequest retryNoTools = new LLMRequest(request.messages,
-                    java.util.Collections.<Map<String, Object>>emptyList(),
-                    request.model, request.temperature, request.maxTokens);
-                return client.complete(retryNoTools);
-            }
-            if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterError(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryModel", "openrouter/auto");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_RETRY", "StarlogueDialogPlugin.sendToLLMImpl",
-                        "retry-on-provider-error", d.toString());
-                } catch (Throwable ignore) { }
-                log.warn("Starlogue: OpenRouter provider error for model=" + request.model
-                    + ", retrying once with openrouter/auto");
-                LLMRequest retry = new LLMRequest(request.messages, request.tools, "openrouter/auto",
-                    request.temperature, request.maxTokens);
-                return client.complete(retry);
-            }
-            if (shouldRetryWithDefaultTemperature(e, request.temperature)) {
-                float fallbackTemp = defaultFallbackTemperature();
-                log.warn("Starlogue: invalid temperature for model=" + request.model
-                    + ", retrying once with fallback temperature=" + fallbackTemp);
-                LLMRequest retry = new LLMRequest(request.messages, request.tools, request.model,
-                    fallbackTemp, request.maxTokens);
-                return client.complete(retry);
-            }
-            throw e;
-        }
-    }
-
     private static String describe(Throwable t) {
         if (t == null) return "unknown error";
         String msg = t.getMessage();
@@ -786,44 +746,12 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return "LLM call failed: " + describe(e);
     }
 
-    private static boolean shouldRetryOpenRouterError(Exception e) {
-        String msg = e != null ? e.getMessage() : null;
-        if (msg == null) return false;
-        boolean is429 = msg.contains("HTTP 429") || msg.contains(" 429 ");
-        boolean is502 = msg.contains("HTTP 502") || msg.contains(" 502 ");
-        boolean providerErr = msg.toLowerCase().contains("provider returned error");
-        return is429 || (is502 && providerErr);
-    }
-
-    private static boolean shouldRetryOpenRouterNoTools(Exception e) {
-        String msg = e != null ? e.getMessage() : null;
-        if (msg == null) return false;
-        String m = msg.toLowerCase();
-        return (m.contains("http 404") || m.contains("http 400"))
-            && m.contains("no endpoints found that support tool use");
-    }
-
-    private static boolean shouldRetryWithDefaultTemperature(Exception e, float currentTemp) {
-        if (Math.abs(currentTemp - defaultFallbackTemperature()) < 0.0001f) return false;
-        String msg = e != null ? e.getMessage() : null;
-        if (msg == null) return false;
-        String m = msg.toLowerCase();
-        return m.contains("temperature")
-            && (m.contains("invalid")
-                || m.contains("only 1 is allowed")
-                || m.contains("must be")
-                || m.contains("unsupported value"));
-    }
-
-    private static float defaultFallbackTemperature() {
-        return 1.0f;
-    }
-
     /** Called on any unrecoverable error. Cleans up and exits to vanilla dialog flow. */
     private void failSafe() {
         state = State.ERROR;
-        pending.set(null);
-        pendingError.set(null);
+        // Drain any in-flight dispatcher results so they don't surface in a future dialog.
+        dispatcher.poll();
+        dispatcher.pollError();
         closeConversationAudit("failsafe");
         StarlogueAPI.clearCurrentContext();
         if (dialog != null) dialog.dismiss();
@@ -923,61 +851,4 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return sb.toString().trim();
     }
 
-    // ── LunaLib helper methods (null-safe, NoClassDefFoundError-safe) ─────
-    //
-    // LunaLib is a soft dependency. If the user hasn't installed it the
-    // `lunalib.lunaSettings.LunaSettings` class is absent at runtime and any
-    // direct reference would throw NoClassDefFoundError the first time the
-    // method is called. We resolve the class reflectively and cache whether
-    // it's available so callers always get their fallback values back instead
-    // of a silent crash.
-
-    private static Boolean LUNA_AVAILABLE = null;
-
-    private static boolean lunaLibAvailable() {
-        if (LUNA_AVAILABLE != null) return LUNA_AVAILABLE;
-        try {
-            Class.forName("lunalib.lunaSettings.LunaSettings",
-                false, StarlogueDialogPlugin.class.getClassLoader());
-            LUNA_AVAILABLE = Boolean.TRUE;
-        } catch (Throwable t) {
-            LUNA_AVAILABLE = Boolean.FALSE;
-        }
-        return LUNA_AVAILABLE;
-    }
-
-    private static float safeGetFloat(String key, float fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        // LunaLib's CSV loader stores Double-typed fields; read as Double and narrow.
-        // Keep a getFloat fallback for legacy Float-typed rows (should no longer exist).
-        try {
-            Double d = lunalib.lunaSettings.LunaSettings.getDouble("starlogue", key);
-            if (d != null) return d.floatValue();
-        } catch (Throwable ignored) { }
-        try {
-            Float f = lunalib.lunaSettings.LunaSettings.getFloat("starlogue", key);
-            if (f != null) return f;
-        } catch (Throwable ignored) { }
-        return fallback;
-    }
-
-    private static int safeGetInt(String key, int fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        try {
-            Integer v = lunalib.lunaSettings.LunaSettings.getInt("starlogue", key);
-            return v != null ? v : fallback;
-        } catch (Throwable t) {
-            return fallback;
-        }
-    }
-
-    private static boolean safeGetBoolean(String key, boolean fallback) {
-        if (!lunaLibAvailable()) return fallback;
-        try {
-            Boolean v = lunalib.lunaSettings.LunaSettings.getBoolean("starlogue", key);
-            return v != null ? v : fallback;
-        } catch (Throwable t) {
-            return fallback;
-        }
-    }
 }

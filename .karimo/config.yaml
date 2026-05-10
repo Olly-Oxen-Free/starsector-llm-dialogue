@@ -1,0 +1,42 @@
+project:
+  name: Starlogue
+  type: starsector-mod
+  runtime: java-17
+  framework: starsector-api
+  package_manager: none
+  source_dirs:
+    - src
+  test_dirs:
+    - test
+
+commands:
+  build: ./build.sh
+  test: ""  # No test runner configured; tests are JUnit-style classes without harness
+  lint: ""  # javac handles
+  typecheck: ./build.sh  # Compile = typecheck for Java
+  deploy: ../../tools/deploy.sh "$(pwd)"
+
+boundaries:
+  never_touch:
+    - jars/**
+    - "${STARSECTOR_DIR}/**"  # Game install dir (set per-developer)
+    - .git/**
+  require_review:
+    - mod_info.json
+    - build.sh
+    - data/**
+
+context:
+  game_version: "0.98a-RC8"
+  java_version: 17
+  classpath_deps:
+    - starfarer.api.jar
+    - lwjgl.jar
+    - log4j-1.2.9.jar
+    - json.jar
+    - LunaLib (soft dep)
+    - StarLords (soft dep)
+
+karimo:
+  version: 9.7
+  created: 2026-05-09

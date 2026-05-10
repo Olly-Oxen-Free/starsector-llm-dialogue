@@ -5,8 +5,8 @@ import com.fs.starfarer.api.campaign.*;
 import com.fs.starfarer.api.campaign.econ.MarketAPI;
 import com.fs.starfarer.api.characters.PersonAPI;
 import starlogue.action.StarlogueAction;
+import starlogue.engine.FleetContextBuilder;
 import starlogue.engine.GameContext;
-import starlogue.memory.MemoryEngine;
 import starlogue.personality.PersonalityComposer;
 import starlogue.provider.StarloguePlugin;
 import starlords.controllers.FiefController;
@@ -36,42 +36,14 @@ public class StarLordPlugin implements StarloguePlugin {
     @Override
     public GameContext buildContext(SectorEntityToken entity) {
         CampaignFleetAPI fleet = (CampaignFleetAPI) entity;
-        PersonAPI commander = fleet.getCommander();
-        Lord lord = LordController.getLordById(commander.getId());
+        Lord lord = LordController.getLordById(fleet.getCommander().getId());
 
-        FactionAPI npcFaction = fleet.getFaction();
-        FactionAPI playerFaction = Global.getSector().getPlayerFaction();
-        CampaignFleetAPI playerFleet = Global.getSector().getPlayerFleet();
-
-        GameContext ctx = new GameContext();
-        ctx.entity = entity;
-        ctx.person = commander;
-        ctx.speakerName = commander.getNameString();
-        ctx.fleet = fleet;
-        ctx.npcFaction = npcFaction;
-        ctx.playerFaction = playerFaction;
-        ctx.repLevel = npcFaction.getRelationshipLevel(playerFaction.getId());
-        ctx.repValue = npcFaction.getRelationship(playerFaction.getId());
-        ctx.individualRel = ctx.repValue;
-
-        ctx.npcFleetPoints = fleet.getFleetPoints();
-        ctx.playerFleetPoints = playerFleet != null ? playerFleet.getFleetPoints() : 0;
-        int denom = Math.max(ctx.npcFleetPoints, ctx.playerFleetPoints);
-        ctx.strengthDelta = denom == 0 ? 0f
-            : (float)(ctx.npcFleetPoints - ctx.playerFleetPoints) / denom;
-
-        ctx.memoryScore = MemoryEngine.getScore(commander);
-        ctx.playerHasBluffCredibility = MemoryEngine.getFactionScore(npcFaction) > -20f;
+        // Shared fleet fields via builder; lord-specific additions appended below.
+        GameContext ctx = FleetContextBuilder.buildBase(fleet);
         ctx.isStarLord = true;
         ctx.lordData = lord;
 
-        if (playerFleet != null) {
-            com.fs.starfarer.api.campaign.rules.MemoryAPI playerMem = playerFleet.getMemory();
-            ctx.repGained30d = playerMem.contains("$starlogue_rep_gained_30d")
-                ? playerMem.getFloat("$starlogue_rep_gained_30d") : 0f;
-            ctx.repLost30d = playerMem.contains("$starlogue_rep_lost_30d")
-                ? playerMem.getFloat("$starlogue_rep_lost_30d") : 0f;
-        }
+        CampaignFleetAPI playerFleet = Global.getSector().getPlayerFleet();
 
         // Lord-specific context notes
         int playerRel = lord.getPlayerRel();
@@ -182,45 +154,13 @@ public class StarLordPlugin implements StarloguePlugin {
             ? "This lord has a mission available for you."
             : "This lord has no mission to offer at this time.");
 
-        starlogue.engine.FleetContextHelper.enrichPlayerSide(ctx);
-
         return ctx;
     }
 
     @Override
     public List<StarlogueAction> getActions(GameContext ctx) {
-        List<StarlogueAction> actions = new ArrayList<StarlogueAction>();
-        // Parity with FleetCaptainPlugin (fleet negotiation + §4 tools)
-        actions.add(new starlogue.action.fleet.AttackAction());
-        actions.add(new starlogue.action.fleet.RetreatAction());
-        actions.add(new starlogue.action.fleet.StandDownAction());
-        actions.add(new starlogue.action.fleet.WarnOffAction());
-        actions.add(new starlogue.action.fleet.ExtortAction());
-        actions.add(new starlogue.action.fleet.PayTributeAction());
-        actions.add(new starlogue.action.fleet.TradeOfferAction());
-        actions.add(new starlogue.action.fleet.TransferCreditsAction());
-        actions.add(new starlogue.action.fleet.TransferSuppliesAction());
-        actions.add(new starlogue.action.fleet.TransferFuelAction());
-        actions.add(new starlogue.action.fleet.RansomCrewAction());
-        actions.add(new starlogue.action.fleet.ShareIntelAction());
-        actions.add(new starlogue.action.fleet.RecruitAllyAction());
-        actions.add(new starlogue.action.fleet.CeasefireAction());
-        actions.add(new starlogue.action.fleet.AdjustIndividualRelAction());
-        actions.add(new starlogue.action.fleet.AdjustFactionRelAction());
-        actions.add(new starlogue.action.fleet.InspectFleetAction());
-        actions.add(new starlogue.action.fleet.InspectShipDetailAction());
-        actions.add(new starlogue.action.fleet.BluffIdentityAction());
-        actions.add(new starlogue.action.fleet.ChallengeDisguiseAction());
-        actions.add(new starlogue.action.fleet.ExposeInconsistencyAction());
-        actions.add(new starlogue.action.fleet.IntelShareTipAction());
-        actions.add(new starlogue.action.fleet.IntelMarkMemoryAction());
-        actions.add(new starlogue.action.fleet.PersonSetNoteAction());
-        actions.add(new starlogue.action.fleet.FleetEscortPlayerAction());
-        actions.add(new starlogue.action.fleet.FleetPatrolHereAction());
-        actions.add(new starlogue.action.fleet.FleetDisengageSoftAction());
-        actions.add(new starlogue.action.fleet.FleetHarassAction());
-        actions.add(new starlogue.action.fleet.TransferMarinesAction());
-        actions.add(new starlogue.action.fleet.TransferCommodityBundleAction());
+        // Common fleet actions shared with FleetCaptainPlugin
+        List<StarlogueAction> actions = starlogue.action.fleet.DefaultFleetActions.list();
         // Star Lord exclusive
         actions.add(new PledgeAllianceAction());
         actions.add(new SwayLordAction());

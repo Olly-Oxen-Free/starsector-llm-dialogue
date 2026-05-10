@@ -1,0 +1,24 @@
+{
+  "slug": "codebase-audit-kiss-solid",
+  "status": "wave-3-complete",
+  "created": "2026-05-09",
+  "approved": "2026-05-09",
+  "revised": "2026-05-10",
+  "task_count": 16,
+  "complexity_total": 47,
+  "waves": 4,
+  "tasks_completed": ["T-1", "T-2", "T-3", "T-7", "T-9", "T-10", "T-12", "T-4", "T-8", "T-5", "T-6", "T-11", "T-13"],
+  "current_wave": 3,
+  "wave_1_pr": "https://github.com/Olly-Oxen-Free/starsector-llm-dialogue/pull/1",
+  "wave_1_pr_branch": "karimo/001-audit-w1",
+  "wave_2_commits": {
+    "T-4_T-8": "3aea452",
+    "T-5": "2f0e289",
+    "T-6": "0d01b9f"
+  },
+  "wave_3_commits": {
+    "T-11": "aaa015d",
+    "T-13": "0f2f3dc"
+  },
+  "notes": "Wave 1 complete 2026-05-09; greptile P1 fix landed 2026-05-09 (commit 6814fcc). Wave 4 added 2026-05-10 (T-14 hostility fix, T-15 engagement teardown, T-16 abort+tooltips) after user-reported gameplay bugs. T-13 rescoped — animated dots already shipped. Wave 2 complete 2026-05-10: T-4 asFloat coercion, T-8 DefaultFleetActions dedup, T-5 LlmDispatcher extraction, T-6 ProviderFactory extraction. Wave 3 complete 2026-05-10: T-11 JsonUtils extraction + LunaSettingHelper consolidation, T-13 UX preflight + in-character dot text + option tooltips + TestRunner."
+}
