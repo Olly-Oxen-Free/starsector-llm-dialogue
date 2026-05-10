@@ -426,7 +426,13 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         }
 
         if (waitTimer > 30f) {
-            log.warn("Starlogue: LLM timeout");
+            log.warn("Starlogue: LLM timeout — cancelling background dispatch to avoid stale response");
+            // Cancel the in-flight dispatch so an orphaned response can't surface as the
+            // answer to the player's next message. Mirrors the End-button abort path above.
+            dispatcher.cancel();
+            if (mcpBridge != null) {
+                mcpBridge.cancelAll();
+            }
             state = State.IDLE;
             waitTimer = 0f;
             pendingUserMessage = null;

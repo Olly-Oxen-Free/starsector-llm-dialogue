@@ -121,21 +121,38 @@ public class ClaudeCliClient implements LLMClient {
             stderrDrainer.setDaemon(true);
             stderrDrainer.start();
 
-            // 5. Parse stdout NDJSON
+            // 5. Watchdog: parseStream() reads stdout in a blocking loop until EOF, so the
+            // post-parse waitFor() guard is unreachable when the subprocess hangs with stdout
+            // open. Spawn a watchdog that destroys the process after timeout — closing stdout
+            // unblocks parseStream() and we report a timeout from this thread.
+            final java.util.concurrent.atomic.AtomicBoolean timedOut = new java.util.concurrent.atomic.AtomicBoolean(false);
+            Thread watchdog = new Thread(() -> {
+                try {
+                    if (!proc.waitFor(cliCfg.timeoutSec, TimeUnit.SECONDS)) {
+                        timedOut.set(true);
+                        log.warn("ClaudeCliClient: subprocess timeout after " + cliCfg.timeoutSec + "s — killing");
+                        proc.destroy();
+                        if (!proc.waitFor(1, TimeUnit.SECONDS)) proc.destroyForcibly();
+                    }
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "claude-cli-watchdog");
+            watchdog.setDaemon(true);
+            watchdog.start();
+
+            // 6. Parse stdout NDJSON (will return when stdout closes — naturally on result, or
+            // forcibly when the watchdog kills the process)
             String assembledText = parseStream(process);
 
-            // 6. Wait for process to exit (with timeout)
-            boolean exited = process.waitFor(cliCfg.timeoutSec, TimeUnit.SECONDS);
-            if (!exited) {
-                log.warn("ClaudeCliClient: subprocess timed out after " + cliCfg.timeoutSec + "s — killing");
-                process.destroy();
-                boolean gone = process.waitFor(1, TimeUnit.SECONDS);
-                if (!gone) process.destroyForcibly();
+            // 7. Watchdog cleanup: stdout closed, so process is exiting / dead. Cancel watchdog.
+            watchdog.interrupt();
+            if (timedOut.get()) {
                 throw new java.util.concurrent.TimeoutException(
                     "Claude CLI subprocess timed out after " + cliCfg.timeoutSec + "s");
             }
 
-            // 7. Return response — toolCalls always empty (tool execution via MCP)
+            // 8. Return response — toolCalls always empty (tool execution via MCP)
             return new LLMResponse(assembledText, Collections.emptyList());
 
         } finally {
@@ -404,6 +421,13 @@ public class ClaudeCliClient implements LLMClient {
         cmd.add("--mcp-config");
         cmd.add(mcpConfigPath.toAbsolutePath().toString());
         cmd.add("--strict-mcp-config");
+        // SECURITY: --dangerously-skip-permissions bypasses Claude's per-tool confirmation.
+        // The safety guarantee comes from --tools "" which the CLI documents as
+        // "Use \"\" to disable all tools" (see `claude --help`). With built-in tools (Bash,
+        // Read, Edit, Write) disabled, only the MCP tools registered by McpToolSchema remain
+        // callable. Behavior live-validated in the C-0 spike (research/spike-c0-results.md).
+        // If this assumption ever breaks (CLI behavior change), Claude could regain access to
+        // host filesystem/shell — guard the spike test in CI before bumping minimum CLI version.
         cmd.add("--dangerously-skip-permissions");
         cmd.add("--tools");
         cmd.add("");

@@ -5,6 +5,9 @@ import org.apache.log4j.Logger;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Lifecycle wrapper around a JDK {@link HttpServer} that exposes a single
@@ -30,6 +33,7 @@ public class McpServer {
 
     private final McpRpcHandler handler;
     private HttpServer httpServer;
+    private ExecutorService executor;
     private int port = -1;
 
     public McpServer(McpToolBridge bridge) {
@@ -50,8 +54,16 @@ public class McpServer {
         // Bind to loopback, port 0 → OS assigns ephemeral port
         httpServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), /*backlog*/ 8);
         httpServer.createContext("/mcp", handler);
-        // Default executor: uses a cached thread pool managed by the JDK
-        httpServer.setExecutor(null);
+        // Bounded thread pool: tools/call handlers can block up to 10s waiting for the
+        // game-thread bridge. Null executor (default) creates one thread per request unbounded
+        // — under a misbehaving CLI that opens many parallel tool calls, that grows without
+        // limit. Cap at 4 concurrent worker threads; queued requests wait their turn.
+        executor = Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "starlogue-mcp-worker");
+            t.setDaemon(true);
+            return t;
+        });
+        httpServer.setExecutor(executor);
         httpServer.start();
 
         port = httpServer.getAddress().getPort();
@@ -71,6 +83,18 @@ public class McpServer {
         httpServer.stop(delaySec);
         httpServer = null;
         port = -1;
+        if (executor != null) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(delaySec + 1L, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException ie) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            executor = null;
+        }
         log.info("Starlogue MCP server stopped.");
     }
 
