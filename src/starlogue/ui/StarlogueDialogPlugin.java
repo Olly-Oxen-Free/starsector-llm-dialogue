@@ -228,6 +228,16 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         if (OPT_SEND.equals(optionData)) {
             submitCurrentInput();
         } else if (OPT_END.equals(optionData)) {
+            // C-9: if we are WAITING on the LLM, abort the in-flight request before exiting.
+            if (state == State.WAITING) {
+                log.info("Starlogue: user aborted while WAITING — cancelling in-flight request");
+                dispatcher.cancel();
+                if (mcpBridge != null) {
+                    mcpBridge.cancelAll();
+                }
+                ConversationAuditLog.logToolCall(conversationId, "", null, "user_aborted",
+                    "user pressed End while LLM request was in flight");
+            }
             exitConversation();
         }
     }
