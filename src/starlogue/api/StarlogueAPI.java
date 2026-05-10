@@ -200,4 +200,14 @@ public final class StarlogueAPI {
         pendingHandoff = null;
         return p;
     }
+
+    /**
+     * Returns the pending handoff plugin without consuming it.
+     * Used by {@link starlogue.mcp.McpToolBridge} to detect handoffs triggered via
+     * MCP-driven tool execution, without removing the reference before the dialog
+     * plugin can act on it.
+     */
+    public static InteractionDialogPlugin peekHandoff() {
+        return pendingHandoff;
+    }
 }

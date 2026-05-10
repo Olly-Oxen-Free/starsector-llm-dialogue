@@ -7,8 +7,12 @@ import org.json.JSONObject;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 
+import starlogue.api.StarlogueAPI;
+
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -48,6 +52,21 @@ public class McpToolBridge {
 
     /** Set by {@code StarlogueDialogPlugin} when a dialog is open. */
     private volatile GameContext currentContext;
+
+    /**
+     * Pending narrative notes from tool executions that the dialog plugin has not yet
+     * rendered. Populated on the game thread by {@link #executeRequest}; drained by
+     * {@link #drainNarrativeNotes()} called from the dialog plugin.
+     */
+    private final ConcurrentLinkedQueue<String> pendingNotes = new ConcurrentLinkedQueue<>();
+
+    /**
+     * True if any executed action triggered a dialog handoff via
+     * {@link StarlogueAPI#handoffToPlugin}. The dialog plugin checks this in
+     * {@code advance()} to detect that the dialog should be dismissed (the handoff
+     * plugin takes over). Reset by {@link #consumeHandoffFlag()}.
+     */
+    private volatile boolean handoffRequested = false;
 
     public McpToolBridge() {}
 
@@ -147,6 +166,34 @@ public class McpToolBridge {
         drainOnGameThread(currentContext);
     }
 
+    // ── Game-thread signals ───────────────────────────────────────────────────
+
+    /**
+     * Drain any narrative notes accumulated during the last tool-execution batch.
+     * Returns the list (may be empty) and clears the internal queue.
+     * MUST be called from the game thread.
+     */
+    public List<String> drainNarrativeNotes() {
+        List<String> notes = new ArrayList<>();
+        String note;
+        while ((note = pendingNotes.poll()) != null) notes.add(note);
+        return notes;
+    }
+
+    /**
+     * Returns true (and resets the flag to false) if any tool executed via MCP
+     * triggered a dialog handoff via {@link StarlogueAPI#handoffToPlugin}.
+     * The dialog plugin should call this each frame in {@code advance()} and, when
+     * true, consume the handoff from StarlogueAPI and dismiss itself.
+     */
+    public boolean consumeHandoffFlag() {
+        if (handoffRequested) {
+            handoffRequested = false;
+            return true;
+        }
+        return false;
+    }
+
     // ── Cancellation ─────────────────────────────────────────────────────────
 
     /**
@@ -173,7 +220,18 @@ public class McpToolBridge {
             Map<String, Object> argMap = jsonObjectToMap(req.args);
             req.action.execute(ctx, argMap);
 
+            // Check if the action requested a dialog handoff (e.g. tournament / quest).
+            // We set a flag so the dialog plugin can detect this in advance() and act.
+            // Do NOT consume the handoff here — the dialog plugin must call
+            // StarlogueAPI.consumeHandoff() to actually retrieve and install the new plugin.
+            com.fs.starfarer.api.campaign.InteractionDialogPlugin pendingHandoff =
+                StarlogueAPI.peekHandoff();
+            if (pendingHandoff != null) {
+                handoffRequested = true;
+            }
+
             String note = req.action.narrativeNote();
+            if (note != null) pendingNotes.offer(note);
             req.resultFuture.complete(successEnvelope(note != null ? note : "ok"));
 
         } catch (Throwable t) {

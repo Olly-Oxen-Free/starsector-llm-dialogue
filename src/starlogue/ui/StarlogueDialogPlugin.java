@@ -11,6 +11,9 @@ import com.fs.starfarer.api.ui.TooltipMakerAPI;
 import org.lwjgl.input.Keyboard;
 import starlogue.engine.*;
 import starlogue.llm.*;
+import starlogue.mcp.McpServer;
+import starlogue.mcp.McpToolBridge;
+import starlogue.mcp.McpToolSchema;
 import starlogue.api.StarlogueAPI;
 import starlogue.config.LlmBackendConfig;
 import starlogue.config.LunaSettingHelper;
@@ -47,6 +50,18 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private State state = State.IDLE;
     private float waitTimer = 0f;
     private final LlmDispatcher dispatcher = new LlmDispatcher();
+    /**
+     * Active LLM session — non-null when a session is open. For non-CLI providers this
+     * is a trivial no-op wrapper. For {@code claude_cli} it owns the MCP server lifecycle.
+     * Closed in {@link #exitConversation()} and {@link #failSafe()}.
+     */
+    private LlmSession llmSession = null;
+    /**
+     * MCP bridge reference — non-null only when provider is {@code claude_cli}.
+     * Populated after session creation; used in {@link #advance(float)} to drain
+     * tool calls and detect handoffs.
+     */
+    private McpToolBridge mcpBridge = null;
     private String pendingUserMessage = null;
     private final String conversationId = ConversationAuditLog.newConversationId();
     private boolean conversationAuditClosed = false;
@@ -105,20 +120,75 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             // misconfiguration surfaces as a friendly in-dialog message rather than
             // a silent dismiss or cryptic exception on first send.
             LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
-            String configError = validateConfig(cfg);
-            if (configError != null) {
-                // Surface a helpful hint about where to configure the key.
-                String providerHint = (cfg != null && cfg.provider != null && !cfg.provider.isEmpty())
-                    ? cfg.provider : "your LLM provider";
-                text.addParagraph("[Starlogue] API key is not configured for " + providerHint
-                    + ". Open LunaSettings (or edit saves/common/Starlogue_credentials.json)"
-                    + " and set starlogue_api_key, then re-open the channel.");
-                text.addParagraph("You can end the conversation and come back once the key is set.");
-                log.warn("Starlogue: API-key preflight failed — " + configError);
-                state = State.IDLE;
-                showMainOptions();
-                options.setEnabled(OPT_SEND, false);
-                return;
+
+            // For claude_cli: run auth preflight before constructing the session.
+            if ("claude_cli".equals(cfg.provider)) {
+                String cliPath = (cfg.claudeCli != null) ? cfg.claudeCli.cliPath : "claude";
+                ClaudeCliPreflight.PreflightResult preflight = ClaudeCliPreflight.check(cliPath);
+                if (preflight != ClaudeCliPreflight.PreflightResult.OK) {
+                    text.addParagraph("[Starlogue] " + ClaudeCliPreflight.friendlyMessage(preflight, cliPath));
+                    text.addParagraph("You can end the conversation and fix the issue, then re-open the channel.");
+                    log.warn("Starlogue: claude_cli preflight failed — " + preflight);
+                    state = State.IDLE;
+                    showMainOptions();
+                    options.setEnabled(OPT_SEND, false);
+                    return;
+                }
+
+                // Create session: starts McpServer, constructs ClaudeCliClient
+                try {
+                    LlmBackendConfig.BackendOption first = cfg.backends.get(0);
+                    llmSession = ProviderFactory.INSTANCE.createSession(first, cfg.claudeCli);
+                } catch (Exception e) {
+                    text.addParagraph("[Starlogue] Failed to start MCP bridge on localhost: " + describe(e)
+                        + ". Check Starsector log for details.");
+                    text.addParagraph("You can end the conversation and come back after restarting.");
+                    log.error("Starlogue: claude_cli session start failed", e);
+                    state = State.IDLE;
+                    showMainOptions();
+                    options.setEnabled(OPT_SEND, false);
+                    return;
+                }
+
+                // Wire the bridge: set schema + context
+                // ProviderFactory creates the bridge internally; retrieve it via the client
+                if (llmSession.client() instanceof ClaudeCliClient) {
+                    // Access bridge via reflection-free approach: use a wrapper session that exposes the bridge
+                    // The bridge is stored on the session created by createClaudeCliSession.
+                    // We need the bridge for draining. Store as mcpBridge via the factory.
+                    // Since ProviderFactory creates bridge internally, we pass context/schema post-creation
+                    // by having ProviderFactory expose the bridge — or we retrieve it differently.
+                    // Simplest: re-retrieve from the session field we store. The LlmSession returned by
+                    // createClaudeCliSession wraps the bridge; we need it exposed.
+                    // SOLUTION: cast session to ClaudeCliSession (inner class not accessible) — instead,
+                    // we use a CliSessionHolder interface added to the session.
+                }
+                // Retrieve the bridge from the session via the CliSessionHolder interface
+                if (llmSession instanceof ProviderFactory.CliSessionHolder) {
+                    mcpBridge = ((ProviderFactory.CliSessionHolder) llmSession).getBridge();
+                    McpToolSchema schema = new McpToolSchema(actionSet);
+                    mcpBridge.setSchema(schema);
+                    mcpBridge.setContext(ctx);
+                    // Also set schema on the McpServer via the session
+                    McpServer server = ((ProviderFactory.CliSessionHolder) llmSession).getServer();
+                    server.setSchema(schema);
+                }
+            } else {
+                // Non-CLI providers: standard API key validation
+                String configError = validateConfig(cfg);
+                if (configError != null) {
+                    String providerHint = (cfg.provider != null && !cfg.provider.isEmpty())
+                        ? cfg.provider : "your LLM provider";
+                    text.addParagraph("[Starlogue] API key is not configured for " + providerHint
+                        + ". Open LunaSettings (or edit saves/common/Starlogue_credentials.json)"
+                        + " and set starlogue_api_key, then re-open the channel.");
+                    text.addParagraph("You can end the conversation and come back once the key is set.");
+                    log.warn("Starlogue: API-key preflight failed — " + configError);
+                    state = State.IDLE;
+                    showMainOptions();
+                    options.setEnabled(OPT_SEND, false);
+                    return;
+                }
             }
             sendToLLM("(Conversation starts. Greet the player briefly and in character. One or two sentences only.)");
         } catch (Throwable e) {
@@ -155,6 +225,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
      */
     private void exitConversation() {
         closeConversationAudit("player_exit");
+        closeSession();
         // Peaceful fleet comms: brief no-engage window so closing the LLM layer is less likely
         // to snap straight into a hostile pursuit in some encounter states.
         try {
@@ -221,6 +292,42 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     @Override
     public void advance(float amount) {
+        // Drain MCP tool calls on game thread (claude_cli only).
+        // Must happen regardless of state so in-flight tool calls complete even while
+        // the dialog is in WAITING state. drainOnGameThread is a no-op when the queue is empty.
+        if (mcpBridge != null) {
+            try {
+                mcpBridge.drainOnGameThread(ctx);
+
+                // Render any narrative notes from MCP tool executions
+                for (String note : mcpBridge.drainNarrativeNotes()) {
+                    text.addParagraph("[" + note + "]");
+                }
+
+                // Check if any MCP tool triggered a dialog handoff
+                if (mcpBridge.consumeHandoffFlag()) {
+                    final InteractionDialogPlugin handoff = StarlogueAPI.consumeHandoff();
+                    if (handoff != null) {
+                        failSafe();
+                        Global.getSector().addTransientScript(new EveryFrameScript() {
+                            private boolean done = false;
+                            public boolean isDone() { return done; }
+                            public boolean runWhilePaused() { return true; }
+                            public void advance(float delta) {
+                                if (!done) {
+                                    done = Global.getSector().getCampaignUI()
+                                        .showInteractionDialog(handoff, null);
+                                }
+                            }
+                        });
+                        return;
+                    }
+                }
+            } catch (Throwable t) {
+                log.error("Starlogue: error draining MCP bridge", t);
+            }
+        }
+
         if (state != State.WAITING) return;
         waitTimer += amount;
 
@@ -395,10 +502,14 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private void sendToLLMImpl(String userMessage) {
         LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
-        String configError = validateConfig(cfg);
-        if (configError != null) {
-            reportError(configError);
-            return;
+        // For claude_cli the session is already started (and preflight passed in init()).
+        // Skip the API-key validation — claude_cli doesn't use an API key.
+        if (llmSession == null) {
+            String configError = validateConfig(cfg);
+            if (configError != null) {
+                reportError(configError);
+                return;
+            }
         }
 
         state = State.WAITING;
@@ -457,9 +568,16 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         }
 
         // Delegate background dispatch + retry to LlmDispatcher.
-        // ProviderFactory supplies all provider-wiring; dialog plugin stays free of new XxxClient() calls.
+        // For claude_cli: use the pre-built session client so we don't re-create the MCP server.
+        // For all other providers: ProviderFactory creates the client fresh each call.
         final LLMRequest baseRequest = new LLMRequest(messages, tools, first.model, temp, maxTokens);
-        dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
+        if (llmSession != null) {
+            // claude_cli: single-backend, fixed client from the open session
+            final LLMClient sessionClient = llmSession.client();
+            dispatcher.dispatch(baseRequest, backends, b -> sessionClient);
+        } else {
+            dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
+        }
     }
 
     private void displayResponse(LLMResponse response) {
@@ -658,6 +776,8 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     private String validateBackendOption(LlmBackendConfig.BackendOption b) {
         if (b == null) return "entry is null.";
+        // claude_cli doesn't use model/apiKey fields from BackendOption — skip validation
+        if ("claude_cli".equals(b.provider)) return null;
         if (b.model == null || b.model.isEmpty()) {
             return "model is empty. Set starlogue_model.";
         }
@@ -746,12 +866,24 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return "LLM call failed: " + describe(e);
     }
 
+    /** Closes the LLM session (stops MCP server etc.) if one is open. Idempotent. */
+    private void closeSession() {
+        if (llmSession != null) {
+            try { llmSession.close(); } catch (Throwable t) {
+                log.warn("Starlogue: error closing LLM session", t);
+            }
+            llmSession = null;
+            mcpBridge = null;
+        }
+    }
+
     /** Called on any unrecoverable error. Cleans up and exits to vanilla dialog flow. */
     private void failSafe() {
         state = State.ERROR;
         // Drain any in-flight dispatcher results so they don't surface in a future dialog.
         dispatcher.poll();
         dispatcher.pollError();
+        closeSession();
         closeConversationAudit("failsafe");
         StarlogueAPI.clearCurrentContext();
         if (dialog != null) dialog.dismiss();
