@@ -101,12 +101,23 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
                 : (ctx.person != null ? ctx.person.getNameString() : "the other side");
             text.addParagraph("Channel open. You are speaking with " + speaker + ".");
 
-            // Validate config before making the LLM call so misconfiguration is visible
-            // in-dialog instead of causing a silent dismiss.
+            // API-key preflight: validate config before making the LLM call so
+            // misconfiguration surfaces as a friendly in-dialog message rather than
+            // a silent dismiss or cryptic exception on first send.
             LlmBackendConfig.Snapshot cfg = LlmBackendConfig.load();
             String configError = validateConfig(cfg);
             if (configError != null) {
-                reportError(configError);
+                // Surface a helpful hint about where to configure the key.
+                String providerHint = (cfg != null && cfg.provider != null && !cfg.provider.isEmpty())
+                    ? cfg.provider : "your LLM provider";
+                text.addParagraph("[Starlogue] API key is not configured for " + providerHint
+                    + ". Open LunaSettings (or edit saves/common/Starlogue_credentials.json)"
+                    + " and set starlogue_api_key, then re-open the channel.");
+                text.addParagraph("You can end the conversation and come back once the key is set.");
+                log.warn("Starlogue: API-key preflight failed — " + configError);
+                state = State.IDLE;
+                showMainOptions();
+                options.setEnabled(OPT_SEND, false);
                 return;
             }
             sendToLLM("(Conversation starts. Greet the player briefly and in character. One or two sentences only.)");
@@ -186,7 +197,27 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     }
 
     @Override
-    public void optionMousedOver(String optionText, Object optionData) {}
+    public void optionMousedOver(String optionText, Object optionData) {
+        // Surface a one-line description for the main Send / End options.
+        // Starsector's InteractionDialogAPI does not expose a stable tooltip API
+        // that works across all dialog contexts, so we use addPara on the text panel
+        // only when we have a useful hint to show.
+        if (dialog == null) return;
+        try {
+            if (OPT_SEND.equals(optionData)) {
+                dialog.getTextPanel().setFontSmallInsignia();
+                dialog.getTextPanel().addParagraph("Submit your message to " +
+                    (ctx != null && ctx.speakerName != null ? ctx.speakerName : "the other side") + ".");
+                dialog.getTextPanel().setFontInsignia();
+            } else if (OPT_END.equals(optionData)) {
+                dialog.getTextPanel().setFontSmallInsignia();
+                dialog.getTextPanel().addParagraph("Leave the conversation.");
+                dialog.getTextPanel().setFontInsignia();
+            }
+        } catch (Throwable ignored) {
+            // Tooltip display is best-effort; don't break dialog state if API unavailable.
+        }
+    }
 
     @Override
     public void advance(float amount) {
@@ -198,7 +229,21 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         // text field (input), replaceLastParagraph would clobber it.
         if (!inputFieldIsLatest) {
             int idx = ((int) (waitTimer / 0.2f)) % WAIT_FRAMES.length;
-            text.replaceLastParagraph("Starlogue is processing your message " + WAIT_FRAMES[idx]);
+            // In-character dot text: use the NPC's display name when available.
+            String npcName = null;
+            try {
+                if (ctx != null) {
+                    if (ctx.person != null) {
+                        npcName = ctx.person.getNameString();
+                    } else if (ctx.entity != null) {
+                        npcName = ctx.entity.getName();
+                    }
+                }
+            } catch (Throwable ignored) { }
+            String waitingText = (npcName != null && !npcName.isEmpty())
+                ? npcName + " is thinking " + WAIT_FRAMES[idx]
+                : "Starlogue is processing your message " + WAIT_FRAMES[idx];
+            text.replaceLastParagraph(waitingText);
         }
         // Always mirror status on the option row (some builds rarely refresh text-panel animations).
         try {
