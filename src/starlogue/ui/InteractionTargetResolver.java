@@ -4,7 +4,6 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CampaignFleetAPI;
 import com.fs.starfarer.api.campaign.InteractionDialogAPI;
 import com.fs.starfarer.api.campaign.SectorEntityToken;
-import starlogue.debug.DebugSessionLog;
 
 /**
  * Some flows (e.g. bar follow-up) leave {@link InteractionDialogAPI#getInteractionTarget()} null
@@ -29,11 +28,6 @@ public final class InteractionTargetResolver {
             if (pf == null) return null;
             t = pf.getInteractionTarget();
             if (t != null) {
-                // #region agent log
-                DebugSessionLog.log("H_NULL_TARGET", "InteractionTargetResolver.resolve",
-                    "using player fleet interaction target (dialog.getInteractionTarget was null)",
-                    "{\"fleetTargetClass\":\"" + t.getClass().getSimpleName() + "\"}");
-                // #endregion
                 return t;
             }
         } catch (Throwable ignored) { }
@@ -44,13 +38,6 @@ public final class InteractionTargetResolver {
             if (pf != null) {
                 SectorEntityToken focus = pf.getOrbitFocus();
                 if (focus != null && focus.getMarket() != null) {
-                    // #region agent log
-                    try {
-                        DebugSessionLog.log("H_NULL_TARGET", "InteractionTargetResolver.resolve",
-                            "using player fleet orbitFocus (market present)",
-                            "{\"focus\":\"" + focus.getName() + "\"}");
-                    } catch (Throwable ignore) { }
-                    // #endregion
                     return focus;
                 }
             }

@@ -56,7 +56,7 @@ public class PledgeAllianceAction implements StarlogueAction {
         float days = 30f;
         Object daysObj = args.get("duration_days");
         if (daysObj instanceof Number) days = ((Number) daysObj).floatValue();
-        days = Math.min(days, 60f);
+        days = Math.min(60f, Math.max(1f, days));
 
         lord.setPlayerDirected(true);
 

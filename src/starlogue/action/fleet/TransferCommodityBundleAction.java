@@ -4,6 +4,7 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CargoAPI;
 import com.fs.starfarer.api.campaign.RepLevel;
 import org.apache.log4j.Logger;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 
@@ -55,7 +56,7 @@ public class TransferCommodityBundleAction implements StarlogueAction {
             String[] kv = part.split(":");
             if (kv.length < 2) continue;
             String id = kv[0].trim();
-            float q = asFloat(kv[1].trim());
+            float q = ActionMath.asFloat(kv[1].trim());
             if (q <= 0f || id.isEmpty()) continue;
             q = Math.min(q, 2000f);
             if (npcToPlayer) {
@@ -79,13 +80,5 @@ public class TransferCommodityBundleAction implements StarlogueAction {
     @Override
     public String narrativeNote() {
         return lastNote;
-    }
-
-    private static float asFloat(String s) {
-        try {
-            return Float.parseFloat(s);
-        } catch (Throwable t) {
-            return 0f;
-        }
     }
 }

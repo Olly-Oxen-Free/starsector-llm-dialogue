@@ -3,6 +3,7 @@ package starlogue.action.fleet;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CargoAPI;
 import com.fs.starfarer.api.campaign.RepLevel;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 import starlogue.memory.MemoryEngine;
@@ -70,7 +71,9 @@ public class RansomCrewAction implements StarlogueAction {
         int transfer = Math.min(crewCount, npcCrew);
         if (transfer <= 0) return;
 
-        float clampedAmount = Math.min(amount, MAX_RANSOM);
+        float playerBalance = playerCargo.getCredits().get();
+        float clampedAmount = ActionMath.clampRansom(amount, MAX_RANSOM, playerBalance);
+        if (clampedAmount <= 0f) return;
 
         // Deduct player credits, transfer crew
         playerCargo.getCredits().add(-clampedAmount);

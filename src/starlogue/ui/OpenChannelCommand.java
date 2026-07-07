@@ -8,7 +8,6 @@ import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import com.fs.starfarer.api.impl.campaign.rulecmd.BaseCommandPlugin;
 import com.fs.starfarer.api.util.Misc;
 import org.apache.log4j.Logger;
-import starlogue.debug.DebugSessionLog;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -32,11 +31,6 @@ public class OpenChannelCommand extends BaseCommandPlugin {
 
         SectorEntityToken target = InteractionTargetResolver.resolve(dialog);
         if (target == null) {
-            // #region agent log
-            try {
-                DebugSessionLog.log("H_NULL_TARGET", "OpenChannelCommand.execute", "null after resolve", "{}");
-            } catch (Throwable ignore) { }
-            // #endregion
             log.warn("Starlogue: OpenChannelCommand called with null interaction target (after fleet fallback)");
             return false;
         }

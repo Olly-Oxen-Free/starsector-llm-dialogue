@@ -147,12 +147,25 @@ public class ClaudeCliPreflight {
      */
     private static PreflightResult probeVersion(String cliPath) {
         Process proc = null;
+        Thread drainer = null;
         try {
             proc = new ProcessBuilder(cliPath, "--version")
                 .redirectErrorStream(true)
                 .start();
-            // Drain stdout so process doesn't block
-            drainStream(proc);
+            // Drain combined stdout+stderr on a background daemon thread so a hung CLI
+            // can't block this (game/UI) thread on readLine(). The main thread only
+            // waits via waitFor(timeout); on timeout we destroyForcibly() which closes
+            // the stream and unblocks the drainer.
+            final Process p = proc;
+            drainer = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(p.getInputStream()))) {
+                    while (r.readLine() != null) { /* drain */ }
+                } catch (IOException ignored) {}
+            }, "claude-preflight-version-drain");
+            drainer.setDaemon(true);
+            drainer.start();
+
             boolean exited = proc.waitFor(VERSION_TIMEOUT_SEC, TimeUnit.SECONDS);
             if (!exited) {
                 proc.destroyForcibly();
@@ -169,6 +182,9 @@ public class ClaudeCliPreflight {
             return PreflightResult.UNKNOWN_ERROR;
         } finally {
             if (proc != null && proc.isAlive()) proc.destroyForcibly();
+            if (drainer != null) {
+                try { drainer.join(500); } catch (InterruptedException ignored) {}
+            }
         }
     }
 
@@ -179,32 +195,40 @@ public class ClaudeCliPreflight {
     private static PreflightResult probeAuth(String cliPath) {
         Process proc = null;
         Thread stderrDrainer = null;
+        Thread stdoutReader = null;
         try {
             proc = new ProcessBuilder(
                 cliPath, "-p", "--output-format", "json", "ping")
                 .redirectErrorStream(false)
                 .start();
+            final Process p = proc;
 
             // Drain stderr in background to prevent pipe-buffer deadlock
-            final Process p = proc;
             stderrDrainer = new Thread(() -> {
                 try (BufferedReader r = new BufferedReader(
                         new InputStreamReader(p.getErrorStream()))) {
                     while (r.readLine() != null) { /* drain */ }
                 } catch (IOException ignored) {}
-            });
+            }, "claude-preflight-auth-stderr");
             stderrDrainer.setDaemon(true);
             stderrDrainer.start();
 
-            // Read stdout
-            StringBuilder stdoutBuf = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    stdoutBuf.append(line).append('\n');
-                }
-            }
+            // Read stdout on a background daemon thread too, so a hung CLI (captive
+            // portal, network stall) can never block this (game/UI) thread on
+            // readLine(). The main thread only waits via waitFor(timeout); on timeout
+            // we destroyForcibly() which closes the pipes and unblocks both readers.
+            final StringBuilder stdoutBuf = new StringBuilder();
+            stdoutReader = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        synchronized (stdoutBuf) { stdoutBuf.append(line).append('\n'); }
+                    }
+                } catch (IOException ignored) {}
+            }, "claude-preflight-auth-stdout");
+            stdoutReader.setDaemon(true);
+            stdoutReader.start();
 
             boolean exited = proc.waitFor(PING_TIMEOUT_SEC, TimeUnit.SECONDS);
             if (!exited) {
@@ -213,7 +237,12 @@ public class ClaudeCliPreflight {
                 return PreflightResult.UNKNOWN_ERROR;
             }
 
-            String stdout = stdoutBuf.toString();
+            // Process exited on its own — let the stdout reader finish draining the
+            // now-closed pipe so the buffer is complete before we parse it.
+            try { stdoutReader.join(500); } catch (InterruptedException ignored) {}
+
+            String stdout;
+            synchronized (stdoutBuf) { stdout = stdoutBuf.toString(); }
             log.debug("ClaudeCliPreflight: auth probe stdout length=" + stdout.length()
                 + " exitCode=" + proc.exitValue());
 
@@ -229,6 +258,9 @@ public class ClaudeCliPreflight {
             return PreflightResult.UNKNOWN_ERROR;
         } finally {
             if (proc != null && proc.isAlive()) proc.destroyForcibly();
+            if (stdoutReader != null) {
+                try { stdoutReader.join(500); } catch (InterruptedException ignored) {}
+            }
             if (stderrDrainer != null) {
                 try { stderrDrainer.join(500); } catch (InterruptedException ignored) {}
             }
@@ -264,13 +296,5 @@ public class ClaudeCliPreflight {
         // Exit non-zero but no auth marker — unknown error
         log.warn("ClaudeCliPreflight: auth probe exited " + exitCode + " without auth error marker");
         return PreflightResult.UNKNOWN_ERROR;
-    }
-
-    /** Drains the process's combined stdout+stderr (use when redirectErrorStream=true). */
-    private static void drainStream(Process proc) {
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(proc.getInputStream()))) {
-            while (r.readLine() != null) { /* drain */ }
-        } catch (IOException ignored) {}
     }
 }

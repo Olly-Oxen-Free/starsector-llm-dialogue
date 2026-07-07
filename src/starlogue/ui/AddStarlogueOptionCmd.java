@@ -10,8 +10,6 @@ import com.fs.starfarer.api.util.Misc;
 import starlogue.engine.ConstraintEngine;
 import starlogue.provider.StarloguePlugin;
 import org.apache.log4j.Logger;
-import org.json.JSONObject;
-import starlogue.debug.DebugSessionLog;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -59,39 +57,10 @@ public class AddStarlogueOptionCmd extends BaseCommandPlugin {
         if (dialog == null) return false;
         if (dialog.getPlugin() instanceof StarlogueDialogPlugin) return false;
 
-        // #region agent log
-        try {
-            String pc = "null";
-            try {
-                if (dialog.getPlugin() != null) pc = dialog.getPlugin().getClass().getName();
-            } catch (Throwable t) { }
-            JSONObject o = new JSONObject();
-            o.put("fromRules", fromRules);
-            o.put("dialogPlugin", pc);
-            DebugSessionLog.log("H_OPT", "AddStarlogueOptionCmd.tryInsert", "enter", o.toString());
-        } catch (Throwable ignore) { }
-        // #endregion
-
         SectorEntityToken target = InteractionTargetResolver.resolve(dialog);
         if (target == null) {
-            // #region agent log
-            try {
-                JSONObject o = new JSONObject();
-                o.put("fromRules", fromRules);
-                o.put("reason", "target_null_after_resolve");
-                DebugSessionLog.log("H_OPT", "AddStarlogueOptionCmd.tryInsert", "skip", o.toString());
-            } catch (Throwable ignore) { }
-            // #endregion
             return false;
         }
-        // #region agent log
-        try {
-            JSONObject o2 = new JSONObject();
-            o2.put("class", target.getClass().getName());
-            o2.put("fromRules", fromRules);
-            DebugSessionLog.log("H_OPT", "AddStarlogueOptionCmd.tryInsert", "target", o2.toString());
-        } catch (Throwable ignore) { }
-        // #endregion
         if (target instanceof CampaignFleetAPI && ((CampaignFleetAPI) target).isPlayerFleet()) {
             return false;
         }

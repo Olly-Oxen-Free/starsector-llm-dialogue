@@ -1,9 +1,7 @@
 package starlogue.llm;
 
 import org.apache.log4j.Logger;
-import org.json.JSONObject;
 import starlogue.config.LlmBackendConfig;
-import starlogue.debug.DebugSessionLog;
 
 import java.util.List;
 import java.util.Map;
@@ -153,14 +151,6 @@ public class LlmDispatcher {
             return client.complete(request);
         } catch (Exception e) {
             if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterNoTools(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryMode", "same-model-no-tools");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_TOOLLESS", "LlmDispatcher.completeWithBackendRetry",
-                        "retry-without-tools", d.toString());
-                } catch (Throwable ignore) { }
                 log.warn("Starlogue: OpenRouter model does not support tool use; retrying once without tools");
                 LLMRequest retryNoTools = new LLMRequest(request.messages,
                     java.util.Collections.<Map<String, Object>>emptyList(),
@@ -168,14 +158,6 @@ public class LlmDispatcher {
                 return client.complete(retryNoTools);
             }
             if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterError(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryModel", "openrouter/auto");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_RETRY", "LlmDispatcher.completeWithBackendRetry",
-                        "retry-on-provider-error", d.toString());
-                } catch (Throwable ignore) { }
                 log.warn("Starlogue: OpenRouter provider error for model=" + request.model
                     + ", retrying once with openrouter/auto");
                 LLMRequest retry = new LLMRequest(request.messages, request.tools, "openrouter/auto",

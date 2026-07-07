@@ -3,6 +3,7 @@ package starlogue.action.fleet;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CargoAPI;
 import com.fs.starfarer.api.campaign.RepLevel;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 import org.apache.log4j.Logger;
@@ -66,12 +67,16 @@ public class TradeOfferAction implements StarlogueAction {
         Object qtyObj = args.get("quantity");
         if (qtyObj instanceof Number) qty = ((Number) qtyObj).floatValue();
         qty = Math.min(qty, MAX_QTY);
-        if (qty <= 0) return;
 
         float pricePerUnit = 0f;
         Object priceObj = args.get("price_per_unit");
         if (priceObj instanceof Number) pricePerUnit = ((Number) priceObj).floatValue();
-        float totalCost = qty * pricePerUnit;
+
+        if (!ActionMath.isValidTradeOffer(pricePerUnit, qty)) {
+            log.debug("Starlogue: trade_offer rejected — invalid price/quantity ("
+                    + pricePerUnit + "/" + qty + ")");
+            return;
+        }
 
         CargoAPI npcCargo = ctx.fleet.getCargo();
         com.fs.starfarer.api.campaign.CampaignFleetAPI pf =

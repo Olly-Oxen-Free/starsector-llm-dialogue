@@ -15,6 +15,7 @@ public class MemoryEngine {
     // ── Game-API methods ──────────────────────────────────────────────────
 
     public static void recordEvent(PersonAPI person, MemoryEvent event, float decayMultiplier) {
+        if (person == null) return;
         float ttl = event.ttlDays * decayMultiplier;
         MemoryAPI mem = person.getMemory();
         String key = KEY_PREFIX + event.keySuffix;

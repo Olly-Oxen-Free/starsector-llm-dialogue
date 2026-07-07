@@ -42,7 +42,10 @@ public class StarlogueModPlugin extends BaseModPlugin {
         // fallback that reuses the same insert logic (not reportShownInteractionDialog;
         // see StarlogueOptionEnforcerScript) and skip refit-class plugins.
         if (Global.getSector() != null) {
-            Global.getSector().addScript(new StarlogueOptionEnforcerScript());
+            // Transient (not persisted): the script is stateless and re-added on every
+            // onGameLoad. addScript would persist a fresh copy into the save each load,
+            // duplicating per-frame scripts and bloating the save. See audit #5.
+            Global.getSector().addTransientScript(new StarlogueOptionEnforcerScript());
         }
     }
 }

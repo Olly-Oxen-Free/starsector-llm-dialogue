@@ -38,6 +38,7 @@ public class FleetPatrolHereAction implements StarlogueAction {
     @Override
     public boolean isAvailable(GameContext ctx) {
         if (ctx.fleet == null) return false;
+        if (ctx.repLevel == null) return false;
         if (ctx.repLevel.isAtBest(RepLevel.HOSTILE)) return false;
         return ctx.memoryScore > 15f;
     }

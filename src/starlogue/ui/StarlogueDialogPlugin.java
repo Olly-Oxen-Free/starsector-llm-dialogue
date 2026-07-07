@@ -18,7 +18,6 @@ import starlogue.api.StarlogueAPI;
 import starlogue.config.LlmBackendConfig;
 import starlogue.config.LunaSettingHelper;
 import starlogue.debug.ConversationAuditLog;
-import starlogue.debug.DebugSessionLog;
 import starlogue.provider.StarloguePlugin;
 import org.json.JSONObject;
 import org.apache.log4j.Logger;
@@ -215,16 +214,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
     @Override
     public void optionSelected(String optionText, Object optionData) {
-        // #region agent log
-        try {
-            JSONObject d = new JSONObject();
-            d.put("optionData", optionData != null ? String.valueOf(optionData) : "null");
-            d.put("state", String.valueOf(state));
-            d.put("hasInputField", inputField != null);
-            d.put("inputFieldIsLatest", inputFieldIsLatest);
-            DebugSessionLog.log("H_UI_SEND", "StarlogueDialogPlugin.optionSelected", "option", d.toString());
-        } catch (Throwable ignore) { }
-        // #endregion
         if (OPT_SEND.equals(optionData)) {
             submitCurrentInput();
         } else if (OPT_END.equals(optionData)) {
@@ -485,11 +474,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
                 // Some dialogs can return null without throwing. Keep retrying on refresh.
                 inputFieldIsLatest = false;
                 log.warn("Starlogue: addTextField returned null (no exception); will retry");
-                // #region agent log
-                try {
-                    DebugSessionLog.log("H_UI", "StarlogueDialogPlugin.appendInputField", "textfield-null", "{}");
-                } catch (Throwable ignore) { }
-                // #endregion
             }
         } catch (Throwable t) {
             log.warn("Starlogue: inline text field unavailable, falling back to paragraph-only mode", t);
@@ -501,25 +485,12 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     /** Pulls text from the current input field, clears it, and sends it to the LLM. */
     private void submitCurrentInput() {
         if (state == State.WAITING) {
-            // #region agent log
-            try {
-                DebugSessionLog.log("H_UI_SEND", "StarlogueDialogPlugin.submitCurrentInput", "ignored-while-waiting", "{}");
-            } catch (Throwable ignore) { }
-            // #endregion
             return; // guard — shortcut can fire while disabled
         }
         String input = (inputField != null) ? inputField.getText() : "";
         if (input == null) input = "";
         String normalized = input.replace("\r\n", "\n");
         if (normalized.trim().isEmpty()) {
-            // #region agent log
-            try {
-                JSONObject d = new JSONObject();
-                d.put("hasInputField", inputField != null);
-                d.put("inputFieldIsLatest", inputFieldIsLatest);
-                DebugSessionLog.log("H_UI_SEND", "StarlogueDialogPlugin.submitCurrentInput", "ignored-empty-input", d.toString());
-            } catch (Throwable ignore) { }
-            // #endregion
             if (inputField != null) inputField.grabFocus();
             return;
         }
@@ -588,18 +559,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             + " firstProvider=" + first.provider
             + " firstModel=" + first.model
             + " firstApiKeyChars=" + (first.apiKey != null ? first.apiKey.length() : 0));
-
-        // #region agent log
-        try {
-            JSONObject d = new JSONObject();
-            d.put("backendCount", backends.size());
-            d.put("provider", first.provider);
-            d.put("apiKeyLen", first.apiKey != null ? first.apiKey.length() : 0);
-            d.put("modelLen", model != null ? model.length() : 0);
-            d.put("endpointLen", first.customEndpoint != null ? first.customEndpoint.length() : 0);
-            DebugSessionLog.log("H_API", "StarlogueDialogPlugin.sendToLLMImpl", "backend", d.toString());
-        } catch (Throwable ignore) { }
-        // #endregion
 
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         Map<String, Object> sysMsg = new LinkedHashMap<String, Object>();
@@ -793,12 +752,6 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             if (stale) {
                 inputFieldIsLatest = false;
                 inputField = null;
-                // #region agent log
-                try {
-                    DebugSessionLog.log("H_UI", "StarlogueDialogPlugin.showMainOptions",
-                        "detected-stale-inputfield-recreate", "{}");
-                } catch (Throwable ignore) { }
-                // #endregion
             }
         }
         if (!inputFieldIsLatest) {

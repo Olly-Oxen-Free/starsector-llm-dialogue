@@ -3,6 +3,7 @@ package starlogue.action.fleet;
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CargoAPI;
 import org.apache.log4j.Logger;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 
@@ -56,7 +57,7 @@ public class TransferCreditsAction implements StarlogueAction {
     @Override
     public void execute(GameContext ctx, Map<String, Object> args) {
         if (ctx.fleet == null || Global.getSector().getPlayerFleet() == null) return;
-        float requested = asFloat(args.get("amount"));
+        float requested = ActionMath.asFloat(args.get("amount"));
         if (requested <= 0f) return;
         float amount = Math.min(requested, MAX_TRANSFER);
         String direction = String.valueOf(args.get("direction"));
@@ -82,14 +83,5 @@ public class TransferCreditsAction implements StarlogueAction {
     @Override
     public String narrativeNote() {
         return "Credits transferred.";
-    }
-
-    private static float asFloat(Object val) {
-        if (val instanceof Number) return ((Number) val).floatValue();
-        try {
-            return Float.parseFloat(String.valueOf(val));
-        } catch (Throwable t) {
-            return 0f;
-        }
     }
 }

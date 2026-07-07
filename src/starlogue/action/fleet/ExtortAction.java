@@ -2,6 +2,7 @@ package starlogue.action.fleet;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.RepLevel;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 import starlogue.memory.MemoryEngine;
@@ -59,7 +60,8 @@ public class ExtortAction implements StarlogueAction {
         if (pf == null) return;
 
         float playerCredits = pf.getCargo().getCredits().get();
-        float clamped = Math.max(1000f, Math.min((float) raw, Math.min(200000f, playerCredits * 0.10f)));
+        float clamped = ActionMath.clampExtort((float) raw, playerCredits, 200000f, 1000f);
+        if (clamped <= 0f) return;
         pf.getCargo().getCredits().add(-clamped);
 
         MemoryEngine.recordEvent(ctx.person, MemoryEvent.EXTORTED, 1.0f);
