@@ -91,6 +91,4 @@ public final class McpJsonRpc {
     public static final int ERR_INVALID_PARAMS   = -32602;
     /** Internal error. */
     public static final int ERR_INTERNAL         = -32603;
-    /** Application-level tool execution error. */
-    public static final int ERR_TOOL_EXEC        = -32000;
 }

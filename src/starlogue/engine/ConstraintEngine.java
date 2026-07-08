@@ -137,6 +137,16 @@ public class ConstraintEngine {
                 log.error("Starlogue: ActionContributor from mod '" + contributor.getModId() + "' threw", e);
             }
         }
+        return filterActions(pool, ctx);
+    }
+
+    /**
+     * Splits a candidate action pool into {@code available} (passes {@link StarlogueAction#isAvailable})
+     * and {@code bluffOnly} (fails availability but the NPC's personality can bluff it — see
+     * {@link #isBluffCapable}). Package-visible and pool-driven (no plugin/entity resolution) so it is
+     * directly unit-testable.
+     */
+    static EvaluatedActionSet filterActions(List<StarlogueAction> pool, GameContext ctx) {
         List<StarlogueAction> available = new ArrayList<StarlogueAction>();
         List<StarlogueAction> bluffOnly = new ArrayList<StarlogueAction>();
         boolean npcCanBluff = isBluffCapable(ctx);

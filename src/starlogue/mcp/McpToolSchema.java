@@ -51,13 +51,6 @@ public class McpToolSchema {
     }
 
     /**
-     * Returns the list of MCP tool descriptors for use in {@code tools/list}.
-     */
-    public List<JSONObject> toMcpTools() {
-        return mcpTools;
-    }
-
-    /**
      * Returns a JSONArray of tool descriptors ready to embed in the
      * {@code tools/list} result envelope.
      */

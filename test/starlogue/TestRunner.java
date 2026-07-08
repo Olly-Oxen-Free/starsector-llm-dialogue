@@ -21,6 +21,10 @@ public class TestRunner {
         "starlogue.ActionMathTest",
         "starlogue.LlmDispatcherTest",
         "starlogue.McpToolBridgeTest",
+        "starlogue.config.LlmBackendConfigTest",
+        "starlogue.engine.ConstraintEngineTest",
+        "starlogue.ui.StarlogueDialogPluginValidationTest",
+        "starlogue.debug.ConversationAuditLogTest",
     };
 
     public static void main(String[] args) throws Exception {

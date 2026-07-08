@@ -61,9 +61,4 @@ public class McpConfigWriter {
         return tmp;
     }
 
-    /** @deprecated use {@link #write(int, String)} — retained for callers without a token. */
-    @Deprecated
-    public static Path write(int port) throws IOException {
-        return write(port, null);
-    }
 }

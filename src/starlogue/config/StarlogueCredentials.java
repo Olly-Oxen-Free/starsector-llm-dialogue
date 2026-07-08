@@ -288,6 +288,4 @@ public final class StarlogueCredentials {
         return raw;
     }
 
-    public static void clearCacheForTests() {
-    }
 }

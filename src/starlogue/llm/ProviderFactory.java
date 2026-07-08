@@ -94,13 +94,6 @@ public final class ProviderFactory implements LlmDispatcher.ClientFactory {
     }
 
     /**
-     * Convenience overload: read CLI config from LunaSettings automatically.
-     */
-    public LlmSession createSession(LlmBackendConfig.BackendOption b) throws IOException {
-        return createSession(b, null);
-    }
-
-    /**
      * Extended {@link LlmSession} interface that exposes the MCP infrastructure
      * for the {@code claude_cli} provider. The dialog plugin casts to this interface
      * to wire the tool schema and context after the action set is resolved.

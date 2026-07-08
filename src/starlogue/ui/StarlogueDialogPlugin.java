@@ -176,19 +176,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
                     return;
                 }
 
-                // Wire the bridge: set schema + context
-                // ProviderFactory creates the bridge internally; retrieve it via the client
-                if (llmSession.client() instanceof ClaudeCliClient) {
-                    // Access bridge via reflection-free approach: use a wrapper session that exposes the bridge
-                    // The bridge is stored on the session created by createClaudeCliSession.
-                    // We need the bridge for draining. Store as mcpBridge via the factory.
-                    // Since ProviderFactory creates bridge internally, we pass context/schema post-creation
-                    // by having ProviderFactory expose the bridge — or we retrieve it differently.
-                    // Simplest: re-retrieve from the session field we store. The LlmSession returned by
-                    // createClaudeCliSession wraps the bridge; we need it exposed.
-                    // SOLUTION: cast session to ClaudeCliSession (inner class not accessible) — instead,
-                    // we use a CliSessionHolder interface added to the session.
-                }
+                // Wire the bridge: set schema + context.
                 // Retrieve the bridge from the session via the CliSessionHolder interface
                 if (llmSession instanceof ProviderFactory.CliSessionHolder) {
                     mcpBridge = ((ProviderFactory.CliSessionHolder) llmSession).getBridge();
@@ -578,9 +566,13 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         // Single credentials snapshot (same parse for validate + request).
         final List<LlmBackendConfig.BackendOption> backends = cfg.backends;
         String model     = cfg.model;
-        float  temp      = LunaSettingHelper.getFloat  ("starlogue_temperature",   0.8f);
-        int    maxTokens = LunaSettingHelper.getInt    ("starlogue_max_tokens",    300);
-        int    maxTurns  = LunaSettingHelper.getInt    ("starlogue_history_turns", 10);
+        float  temp        = LunaSettingHelper.getFloat  ("starlogue_temperature",    0.8f);
+        int    maxTokens   = LunaSettingHelper.getInt    ("starlogue_max_tokens",     300);
+        int    maxTurns    = LunaSettingHelper.getInt    ("starlogue_history_turns", 10);
+        double historyBudget = LunaSettingHelper.getDouble("starlogue_history_budget", 0.6);
+        // Cheap token-estimate cap (#10): ~4 chars/token, budget as a fraction of max_tokens.
+        // Both bounds apply — turn-count cap first, then char budget drops oldest turns further.
+        int maxHistoryChars = (int) (historyBudget * maxTokens * 4);
 
         LlmBackendConfig.BackendOption first = backends.get(0);
         log.info("Starlogue: effective LLM settings — backends=" + backends.size()
@@ -593,7 +585,7 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         sysMsg.put("role", "system");
         sysMsg.put("content", systemPrompt);
         messages.add(sysMsg);
-        messages.addAll(history.getTrimmedHistory(maxTurns));
+        messages.addAll(history.getTrimmedHistory(maxTurns, maxHistoryChars));
         Map<String, Object> userMsg = new LinkedHashMap<String, Object>();
         userMsg.put("role", "user");
         userMsg.put("content", userMessage);
@@ -841,7 +833,8 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         return firstError != null ? firstError : "No usable backend configuration found.";
     }
 
-    private String validateBackendOption(LlmBackendConfig.BackendOption b) {
+    /** Pure/static so it is directly unit-testable (audit test gap #9); no instance state used. */
+    static String validateBackendOption(LlmBackendConfig.BackendOption b) {
         if (b == null) return "entry is null.";
         // claude_cli doesn't use model/apiKey fields from BackendOption — skip validation
         if ("claude_cli".equals(b.provider)) return null;

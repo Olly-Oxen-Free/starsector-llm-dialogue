@@ -22,19 +22,40 @@ public final class NexStarlogueCompat implements ActionContributor {
     private static volatile boolean loggedColonyProbe;
     private static volatile boolean loggedDiplomacyProbe;
     private static volatile boolean loggedAgentProbe;
+    private static volatile Boolean nexProbeOk;
 
     @Override
     public String getModId() {
         return "starlogue_nex_compat";
     }
 
+    /**
+     * Probes for the Nexerelin class this compat layer's reflection targets (used by
+     * {@link NexColonyReportAction}). Cached after the first check — this is only ever called
+     * when the "nexerelin" mod is enabled (see {@code StarlogueModPlugin}), so a missing class
+     * here means an incompatible/very old Nex build, not a missing mod.
+     */
+    private static boolean nexReflectionProbeOk() {
+        if (nexProbeOk != null) return nexProbeOk;
+        try {
+            Class.forName("exerelin.campaign.ExerelinConstants", false,
+                NexStarlogueCompat.class.getClassLoader());
+            nexProbeOk = Boolean.TRUE;
+        } catch (Throwable t) {
+            log.info("Starlogue Nex: reflection probe failed, Nex actions disabled — " + t);
+            nexProbeOk = Boolean.FALSE;
+        }
+        return nexProbeOk;
+    }
+
     @Override
     public List<StarlogueAction> getActions(GameContext ctx) {
-        // NexColonyReportAction, NexFactionSignalAction, and NexAgentTipAction are
-        // placeholder stubs pending a versioned reflection audit of the Nex API.
-        // Returning them wastes three tool slots for no real behaviour.
-        // They remain in this file for reference and will be wired when audited.
-        return Collections.emptyList();
+        if (!nexReflectionProbeOk()) return Collections.emptyList();
+        List<StarlogueAction> actions = new ArrayList<StarlogueAction>(3);
+        actions.add(new NexColonyReportAction());
+        actions.add(new NexFactionSignalAction());
+        actions.add(new NexAgentTipAction());
+        return actions;
     }
 
     /** Best-effort Nex colony intel bridge (placeholder until versioned reflection is audited). */

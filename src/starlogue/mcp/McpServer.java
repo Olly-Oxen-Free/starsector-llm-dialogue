@@ -142,8 +142,4 @@ public class McpServer {
         handler.setSchema(schema);
     }
 
-    /** True if the server has been started and not yet stopped. */
-    public synchronized boolean isRunning() {
-        return httpServer != null;
-    }
 }

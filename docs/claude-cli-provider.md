@@ -41,13 +41,33 @@ You only need to do this once per machine. Credentials persist across game sessi
 
 ---
 
+## Enabling the Provider
+
+Set the provider in `saves/common/Starlogue_credentials.json` (create it from
+`data/config/starlogue/credentials.example.json` if it doesn't exist yet — see the
+main [README](../README.md#configuration) for the full credentials flow):
+
+```json
+{
+  "starlogue_provider": "claude_cli",
+  "starlogue_api_key": "",
+  "starlogue_model": "",
+  "starlogue_endpoint": ""
+}
+```
+
+No API key is needed for `claude_cli` — leave `starlogue_api_key` blank. There is no
+default provider; if the credentials file is missing or `starlogue_provider` is
+unset/invalid, Starlogue falls back to `ollama` (local, requires Ollama running
+separately) rather than `claude_cli`.
+
 ## LunaSettings Configuration
 
-Open **Main Menu → Settings → Mods → Starlogue** and set:
+The `claude_cli`-specific tuning knobs (not the provider selection above) are exposed
+in **Main Menu → Settings → Mods → Starlogue**:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `starlogue_provider` | Set to `claude_cli` | `ollama` |
 | `starlogue_claude_cli_model` | `haiku`, `sonnet`, or `opus` | `sonnet` |
 | `starlogue_claude_cli_path` | Path to the `claude` executable | `claude` (PATH) |
 | `starlogue_claude_cli_timeout_sec` | Seconds before the subprocess is killed | `60` |
