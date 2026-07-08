@@ -2,6 +2,11 @@ fieldID,fieldName,fieldType,defaultValue,secondaryValue,fieldDescription,minValu
 ,,,,,,,,
 starlogue_backendHeader,LLM Backend,Header,LLM Backend,,,,,Backend
 starlogue_credentials_help,Credentials File (required),Text,"LLM provider, API key, model, and custom endpoint are configured ONLY via saves/common/Starlogue_credentials.json. Luna does not provide backend override fields anymore. Use keys: starlogue_provider, starlogue_api_key, starlogue_model, starlogue_endpoint. Template: data/config/starlogue/credentials.example.json.",,"Edit saves/common/Starlogue_credentials.json",,,Backend
+starlogue_claude_cli_header,Claude CLI Provider,Header,Claude CLI Provider,,,,,Backend
+starlogue_claude_cli_model,Claude CLI Model,String,sonnet,,"Model alias passed to the claude CLI via --model. Options: haiku | sonnet | opus. Default: sonnet.",,,Backend
+starlogue_claude_cli_path,Claude CLI Executable Path,String,claude,,"Path or bare name of the claude executable. Leave as 'claude' if it is on your system PATH.",,,Backend
+starlogue_claude_cli_timeout_sec,Claude CLI Timeout (seconds),Int,60,,"Seconds before the claude CLI subprocess is killed. Increase if responses time out on slow machines.",10,300,Backend
+,,,,,,,,
 starlogue_temperature,Temperature,Double,0.8,,"LLM sampling temperature. 0.7-0.9 recommended for roleplay.",0.0,2.0,Backend
 starlogue_max_tokens,Max Response Tokens,Int,300,,"Maximum tokens per LLM response. Keep low for faster local inference.",50,1000,Backend
 ,,,,,,,,

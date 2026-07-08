@@ -4,6 +4,7 @@ import com.fs.starfarer.api.campaign.FactionAPI;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
 import com.fs.starfarer.api.characters.PersonAPI;
 import org.apache.log4j.Logger;
+import starlogue.config.LunaSettingHelper;
 import java.util.Collection;
 import java.util.Map;
 
@@ -14,23 +15,21 @@ public class MemoryEngine {
 
     // ── Game-API methods ──────────────────────────────────────────────────
 
+    /**
+     * Records a memory event against a person.
+     *
+     * @param decayMultiplier per-call intensity multiplier (caller-supplied, varies by action).
+     *                        Combined with the global {@code starlogue_decay_multiplier} Luna
+     *                        setting (default 1.0), which uniformly scales all memory TTLs.
+     */
     public static void recordEvent(PersonAPI person, MemoryEvent event, float decayMultiplier) {
-        float ttl = event.ttlDays * decayMultiplier;
+        if (person == null) return;
+        float lunaDecayMultiplier = (float) LunaSettingHelper.getDouble("starlogue_decay_multiplier", 1.0);
+        float ttl = event.ttlDays * decayMultiplier * lunaDecayMultiplier;
         MemoryAPI mem = person.getMemory();
         String key = KEY_PREFIX + event.keySuffix;
         float current = mem.contains(key) ? getFloat(mem, key) : 0f;
-        float cap = Math.abs(event.points) * 2f;
-        float next = clamp(current + event.points, -cap, cap);
-        mem.set(key, next, ttl);
-    }
-
-    public static void recordFactionEvent(FactionAPI faction, MemoryEvent event, float decayMultiplier) {
-        float ttl = event.ttlDays * decayMultiplier;
-        MemoryAPI mem = faction.getMemory();
-        String key = KEY_PREFIX + event.keySuffix;
-        float current = mem.contains(key) ? getFloat(mem, key) : 0f;
-        float cap = Math.abs(event.points) * 2f;
-        float next = clamp(current + event.points, -cap, cap);
+        float next = nextClampedValue(current, event);
         mem.set(key, next, ttl);
     }
 
@@ -59,12 +58,17 @@ public class MemoryEngine {
     public static void recordEventToMap(Map<String, Object> mem, MemoryEvent event, float decayMultiplier) {
         String key = KEY_PREFIX + event.keySuffix;
         float current = mem.containsKey(key) ? (Float) mem.get(key) : 0f;
-        float cap = Math.abs(event.points) * 2f;
-        float next = clamp(current + event.points, -cap, cap);
+        float next = nextClampedValue(current, event);
         mem.put(key, next);
     }
 
     // ── Private helpers ───────────────────────────────────────────────────
+
+    /** Shared clamp logic: current value + event points, clamped to +/- 2x the event's point magnitude. */
+    private static float nextClampedValue(float current, MemoryEvent event) {
+        float cap = Math.abs(event.points) * 2f;
+        return clamp(current + event.points, -cap, cap);
+    }
 
     private static float scoreFromMemoryAPI(MemoryAPI mem) {
         float total = 0f;

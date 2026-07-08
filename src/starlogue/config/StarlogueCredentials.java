@@ -5,7 +5,6 @@ import com.fs.starfarer.api.SettingsAPI;
 import org.apache.log4j.Logger;
 import org.json.JSONObject;
 import org.json.JSONTokener;
-import starlogue.debug.DebugSessionLog;
 
 /**
  * LLM credentials in {@code Starlogue_credentials.json} under the campaign {@code common} tree.
@@ -185,17 +184,6 @@ public final class StarlogueCredentials {
                 + " hasProviderKey=" + hasProvider
                 + " hasOpenRouterToken=" + hasOpenRouter
                 + " hasGemmaToken=" + hasGemma);
-            // #region agent log
-            try {
-                JSONObject d = new JSONObject();
-                d.put("file", fileName);
-                d.put("len", rawLen);
-                d.put("hasProviderKey", hasProvider);
-                d.put("hasOpenRouterToken", hasOpenRouter);
-                d.put("hasGemmaToken", hasGemma);
-                DebugSessionLog.log("H_PATH", "StarlogueCredentials.logRawFingerprint", "raw", d.toString());
-            } catch (Throwable ignore) { }
-            // #endregion
         } catch (Throwable ignore) { }
     }
 
@@ -264,16 +252,6 @@ public final class StarlogueCredentials {
                 int len = stripped != null ? stripped.length() : -1;
                 log.info("Starlogue: alt loadText probe path=" + c + " len=" + len
                     + " hasOpenRouterToken=" + hasOpenRouter + " hasGemmaToken=" + hasGemma);
-                // #region agent log
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("path", c);
-                    d.put("len", len);
-                    d.put("hasOpenRouterToken", hasOpenRouter);
-                    d.put("hasGemmaToken", hasGemma);
-                    DebugSessionLog.log("H_PATH", "StarlogueCredentials.logAlternativePathProbe", "alt", d.toString());
-                } catch (Throwable ignore) { }
-                // #endregion
             } catch (Throwable t) {
                 log.info("Starlogue: alt loadText probe path=" + c + " failed: "
                     + t.getClass().getSimpleName() + " " + t.getMessage());
@@ -296,20 +274,6 @@ public final class StarlogueCredentials {
         try {
             if (!loggedCredentialSnapshot) {
                 loggedCredentialSnapshot = true;
-                // #region agent log
-                try {
-                    LlmBackendConfig.Snapshot snap = LlmBackendConfig.fromJson(root);
-                    String prov = snap.provider;
-                    if (prov.length() > 32) prov = prov.substring(0, 32) + "...";
-                    JSONObject d = new JSONObject();
-                    d.put("apiKeyLen", snap.apiKey.length());
-                    d.put("modelLen", snap.model.length());
-                    d.put("endpointLen", snap.customEndpoint.length());
-                    d.put("hasProviderKey", root.has("starlogue_provider"));
-                    d.put("providerHead", prov);
-                    DebugSessionLog.log("H_CRED", "StarlogueCredentials.loadRoot", "parsed", d.toString());
-                } catch (Throwable ignore) { }
-                // #endregion
             }
         } catch (Throwable ignore) { }
         return root;
@@ -324,6 +288,4 @@ public final class StarlogueCredentials {
         return raw;
     }
 
-    public static void clearCacheForTests() {
-    }
 }

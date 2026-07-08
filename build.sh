@@ -7,7 +7,21 @@ JAR_FILE="$MOD_DIR/jars/Starlogue.jar"
 TEST_CLASSES_DIR="$MOD_DIR/jars/test-classes"
 GAME="/home/jayden-eppcohen/Games/Starsector"
 
-CLASSPATH="$GAME/starfarer.api.jar:$GAME/lwjgl.jar:$GAME/log4j-1.2.9.jar:$GAME/json.jar:$GAME/mods/LunaLib-2.0.5/jars/LunaLib.jar:$GAME/mods/Star Lords-0.3.70/jars/StarLords.jar"
+LUNALIB_JAR=$(ls -d "$GAME"/mods/LunaLib-*/jars/LunaLib.jar 2>/dev/null | head -1)
+if [ -z "$LUNALIB_JAR" ]; then
+    echo "✗ Could not find LunaLib jar under $GAME/mods/LunaLib-*/jars/LunaLib.jar"
+    echo "  Install LunaLib into the game's mods/ directory, or edit build.sh."
+    exit 1
+fi
+
+STARLORDS_JAR=$(ls -d "$GAME"/mods/"Star Lords"-*/jars/StarLords.jar 2>/dev/null | head -1)
+if [ -z "$STARLORDS_JAR" ]; then
+    echo "✗ Could not find Star Lords jar under $GAME/mods/Star Lords-*/jars/StarLords.jar"
+    echo "  Install Star Lords into the game's mods/ directory, or edit build.sh."
+    exit 1
+fi
+
+CLASSPATH="$GAME/starfarer.api.jar:$GAME/lwjgl.jar:$GAME/log4j-1.2.9.jar:$GAME/json.jar:$LUNALIB_JAR:$STARLORDS_JAR"
 
 # ── Subcommand: test ──────────────────────────────────────────────────────────
 if [ "${1}" = "test" ]; then
@@ -27,8 +41,7 @@ if [ "${1}" = "test" ]; then
     TEST_COUNT=$(wc -l < /tmp/starlogue_test_sources.txt)
     echo "Compiling $TEST_COUNT test source file(s)..."
 
-    JAVAC_OUT=$(javac -source 17 -target 17 -cp "$TEST_CLASSPATH" -d "$TEST_CLASSES_DIR" @/tmp/starlogue_test_sources.txt 2>&1)
-    JAVAC_EXIT=$?
+    JAVAC_OUT=$(javac -source 17 -target 17 -cp "$TEST_CLASSPATH" -d "$TEST_CLASSES_DIR" @/tmp/starlogue_test_sources.txt 2>&1) && JAVAC_EXIT=0 || JAVAC_EXIT=$?
     echo "$JAVAC_OUT" | grep -v "^Note:" || true
     if [ "$JAVAC_EXIT" -ne 0 ]; then
         echo "✗ Test compilation failed (exit $JAVAC_EXIT)!"
@@ -49,8 +62,7 @@ mkdir -p "$CLASSES_DIR"
 find "$MOD_DIR/src" -name "*.java" > /tmp/starlogue_sources.txt
 echo "Compiling $(wc -l < /tmp/starlogue_sources.txt) source files..."
 
-JAVAC_OUTPUT=$(javac -source 17 -target 17 -cp "$CLASSPATH" -d "$CLASSES_DIR" @/tmp/starlogue_sources.txt 2>&1)
-JAVAC_EXIT=$?
+JAVAC_OUTPUT=$(javac -source 17 -target 17 -cp "$CLASSPATH" -d "$CLASSES_DIR" @/tmp/starlogue_sources.txt 2>&1) && JAVAC_EXIT=0 || JAVAC_EXIT=$?
 echo "$JAVAC_OUTPUT" | grep -v "^Note:" || true
 if [ "$JAVAC_EXIT" -ne 0 ]; then
     echo "✗ Compilation failed (exit $JAVAC_EXIT)!"

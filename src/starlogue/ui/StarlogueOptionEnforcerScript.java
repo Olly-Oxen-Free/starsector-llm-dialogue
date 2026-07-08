@@ -5,8 +5,6 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CampaignUIAPI;
 import com.fs.starfarer.api.campaign.InteractionDialogAPI;
 import com.fs.starfarer.api.campaign.InteractionDialogPlugin;
-import org.json.JSONObject;
-import starlogue.debug.DebugSessionLog;
 
 /**
  * Fills the gap when {@code data/campaign/rules.csv} + {@code PopulateOptions} does not
@@ -50,17 +48,6 @@ public class StarlogueOptionEnforcerScript implements EveryFrameScript {
             // even rule-based bar/comm UIs; the hasOption guard in AddStarlogueOptionCmd
             // prevents duplicates when the option is already present.
             if (!barLike && !commLike) return;
-            // #region agent log
-            try {
-                if (barLike || commLike) {
-                    JSONObject o = new JSONObject();
-                    o.put("plugin", cn);
-                    o.put("barLike", barLike);
-                    o.put("commLike", commLike);
-                    DebugSessionLog.log("H_ENF", "StarlogueOptionEnforcerScript.advance", "non-rule inject tick", o.toString());
-                }
-            } catch (Throwable ignore) { }
-            // #endregion
             AddStarlogueOptionCmd.injectForBarOrNonRuleDialog(d);
         } catch (Throwable ignored) { }
     }

@@ -51,7 +51,7 @@ public class RecruitAllyAction implements StarlogueAction {
         float days = 7f;
         Object daysObj = args.get("duration_days");
         if (daysObj instanceof Number) days = ((Number) daysObj).floatValue();
-        days = Math.min(days, 30f);
+        days = Math.min(30f, Math.max(1f, days));
 
         CampaignFleetAPI playerFleet = Global.getSector().getPlayerFleet();
         if (playerFleet == null) return;

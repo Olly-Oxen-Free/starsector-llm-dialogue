@@ -77,6 +77,7 @@ public class QuestDialogPlugin implements InteractionDialogPlugin {
                         text.addParagraph(lord.getLordAPI().getNameString()
                             + " outlines the task. Check your intel screen for the mission briefing.");
                         questGiven = true;
+                        QuestController.setQuestGiven(lord, true);
                     } else {
                         log.warn("Starlogue QuestDialogPlugin: mission is bounty type — no quest added");
                     }
@@ -90,8 +91,6 @@ public class QuestDialogPlugin implements InteractionDialogPlugin {
                 lord.getLordAPI().setMarket(savedLordMarket);
             }
         }
-
-        QuestController.setQuestGiven(lord, true);
 
         if (!questGiven) {
             text.addParagraph(lord.getLordAPI().getNameString()

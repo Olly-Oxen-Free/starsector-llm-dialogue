@@ -4,6 +4,7 @@ import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.CargoAPI;
 import com.fs.starfarer.api.impl.campaign.ids.Commodities;
 import org.apache.log4j.Logger;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.engine.GameContext;
 
@@ -54,7 +55,7 @@ public class TransferSuppliesAction implements StarlogueAction {
     @Override
     public void execute(GameContext ctx, Map<String, Object> args) {
         if (ctx.fleet == null || Global.getSector().getPlayerFleet() == null) return;
-        float qty = asFloat(args.get("quantity"));
+        float qty = ActionMath.asFloat(args.get("quantity"));
         if (qty <= 0f) return;
         float amount = Math.min(qty, MAX_TRANSFER);
         boolean npcToPlayer = !"player_to_npc".equalsIgnoreCase(String.valueOf(args.get("direction")));
@@ -79,14 +80,5 @@ public class TransferSuppliesAction implements StarlogueAction {
     @Override
     public String narrativeNote() {
         return "Supplies transferred.";
-    }
-
-    private static float asFloat(Object val) {
-        if (val instanceof Number) return ((Number) val).floatValue();
-        try {
-            return Float.parseFloat(String.valueOf(val));
-        } catch (Throwable t) {
-            return 0f;
-        }
     }
 }

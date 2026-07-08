@@ -2,6 +2,7 @@ package starlogue.action.fleet;
 
 import com.fs.starfarer.api.Global;
 import com.fs.starfarer.api.campaign.rules.MemoryAPI;
+import starlogue.action.ActionMath;
 import starlogue.action.StarlogueAction;
 import starlogue.config.LunaSettingHelper;
 import starlogue.engine.GameContext;
@@ -50,30 +51,29 @@ public class AdjustIndividualRelAction implements StarlogueAction {
     public void execute(GameContext ctx, Map<String, Object> args) {
         Object rawObj = args.get("delta");
         if (rawObj == null) return;
-        double raw = asFloat(rawObj);
+        double raw = ActionMath.asFloat(rawObj);
         float delta = (float) Math.max(-0.10, Math.min(0.10, raw));
 
         boolean isPositive = delta > 0;
         String capKey = isPositive ? "$starlogue_rep_gained_30d" : "$starlogue_rep_lost_30d";
 
         MemoryAPI playerMem = Global.getSector().getPlayerFleet().getMemory();
-        float used = playerMem.contains(capKey) ? playerMem.getFloat(capKey) : 0f;
+        // Accumulator is stored in DISPLAY POINTS (-100..+100 scale) to match the configured cap;
+        // `delta` above is on the internal -1..+1 scale used by adjustRelationship.
+        float usedPoints = playerMem.contains(capKey) ? playerMem.getFloat(capKey) : 0f;
 
-        float cap = (float) (isPositive
+        float capPoints = (float) (isPositive
             ? LunaSettingHelper.getDouble("starlogue_rep_gain_cap", 20.0)
             : LunaSettingHelper.getDouble("starlogue_rep_loss_cap", 20.0));
-        float allowed = cap - Math.abs(used);
-        if (allowed <= 0f) {
+
+        float effective = ActionMath.clampRepDelta(delta, usedPoints, capPoints);
+        if (effective == 0f) {
             log.debug("Starlogue: monthly rep cap hit for " + (isPositive ? "gain" : "loss"));
             return;
         }
 
-        float effective = isPositive
-            ? Math.min(delta, allowed)
-            : Math.max(delta, -allowed);
-
         ctx.npcFaction.adjustRelationship(ctx.playerFaction.getId(), effective);
-        playerMem.set(capKey, used + Math.abs(effective), 30f);
+        playerMem.set(capKey, usedPoints + ActionMath.repPointsUsed(effective), 30f);
 
         MemoryEvent evt = delta > 0 ? MemoryEvent.HELPED_IN_BATTLE : MemoryEvent.OFFENDED;
         MemoryEngine.recordEvent(ctx.person, evt, 1.0f);
@@ -81,14 +81,4 @@ public class AdjustIndividualRelAction implements StarlogueAction {
     }
 
     @Override public String narrativeNote() { return null; }
-
-    /** Coerces numeric or string-typed JSON values to float. LLMs sometimes return numbers as strings. */
-    private static float asFloat(Object val) {
-        if (val instanceof Number) return ((Number) val).floatValue();
-        try {
-            return Float.parseFloat(String.valueOf(val));
-        } catch (Throwable t) {
-            return 0f;
-        }
-    }
 }

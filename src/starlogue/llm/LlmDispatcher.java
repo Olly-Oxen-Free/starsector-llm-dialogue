@@ -1,14 +1,14 @@
 package starlogue.llm;
 
 import org.apache.log4j.Logger;
-import org.json.JSONObject;
 import starlogue.config.LlmBackendConfig;
-import starlogue.debug.DebugSessionLog;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Owns the background-thread LLM dispatch and backend-fallback retry chain.
@@ -34,8 +34,50 @@ public class LlmDispatcher {
         LLMClient create(LlmBackendConfig.BackendOption backend);
     }
 
-    private final AtomicReference<LLMResponse> pending = new AtomicReference<>(null);
-    private final AtomicReference<Exception> pendingError = new AtomicReference<>(null);
+    /**
+     * A published outcome tagged with the request epoch that produced it. {@link #poll()} and
+     * {@link #pollError()} discard any outcome whose epoch is no longer current, so a late
+     * response from a superseded/cancelled request (bug #7) can never surface as the answer to a
+     * later message. Wrapping value + epoch in one immutable object stored behind a single
+     * {@link AtomicReference} closes the check-then-set race with a concurrent dispatch.
+     */
+    private static final class Tagged<T> {
+        final T value;
+        final int epoch;
+        Tagged(T value, int epoch) { this.value = value; this.epoch = epoch; }
+    }
+
+    private final AtomicReference<Tagged<LLMResponse>> pending = new AtomicReference<>(null);
+    private final AtomicReference<Tagged<Exception>> pendingError = new AtomicReference<>(null);
+
+    /**
+     * Monotonically increasing request epoch (#7/#14). Bumped by every {@link #dispatch(LLMRequest,
+     * List, ClientFactory)} and by {@link #cancel()}. The background thread captures the epoch at
+     * dispatch time and only publishes results / forwards partial-text deltas while its epoch is
+     * still current.
+     */
+    private final AtomicInteger epoch = new AtomicInteger(0);
+
+    /**
+     * Optional partial-text listener (C-7). Written from any thread; invoked on the
+     * background dispatch thread. The dialog plugin registers this so it can render
+     * streaming deltas from {@link ClaudeCliClient} while state == WAITING.
+     * Default: no-op.
+     */
+    private volatile Consumer<String> partialTextListener = delta -> {};
+
+    /**
+     * Register a listener that receives incremental text deltas as they arrive from
+     * the underlying client. Only {@link ClaudeCliClient} actually emits deltas; all
+     * other providers leave this as a no-op. Safe to call from any thread before
+     * {@link #dispatch} is called.
+     */
+    public void setPartialTextListener(Consumer<String> listener) {
+        this.partialTextListener = (listener != null) ? listener : delta -> {};
+    }
+
+    /** Cancel any in-flight CLI subprocess (C-9). */
+    private volatile LLMClient currentClient = null;
 
     /**
      * Starts a daemon thread that iterates {@code backends} in order, attempting each
@@ -50,6 +92,13 @@ public class LlmDispatcher {
     public void dispatch(final LLMRequest baseRequest,
                          final List<LlmBackendConfig.BackendOption> backends,
                          final ClientFactory factory) {
+        // Drain any stale outcome from a prior request before starting a new one (#7).
+        pending.set(null);
+        pendingError.set(null);
+        // Bump the epoch and capture it for this dispatch. Only results/deltas tagged with this
+        // epoch will be published; an in-flight-but-superseded request becomes a no-op producer.
+        final int myEpoch = epoch.incrementAndGet();
+
         Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -61,10 +110,27 @@ public class LlmDispatcher {
                         backend.model, baseRequest.temperature, baseRequest.maxTokens);
                     try {
                         LLMClient client = factory.create(backend);
+                        // Wire partial-text listener for CLI streaming (C-7). Gate deltas on the
+                        // epoch so a stale/cancelled request stops forwarding into the UI (#14).
+                        if (client instanceof ClaudeCliClient) {
+                            ((ClaudeCliClient) client).setPartialTextListener(delta -> {
+                                if (epoch.get() == myEpoch) {
+                                    partialTextListener.accept(delta);
+                                }
+                            });
+                        }
+                        currentClient = client;
                         LLMResponse response = completeWithBackendRetry(client, backend, request);
-                        pending.set(response);
+                        currentClient = null;
+                        // Publish only if still current; always clear the opposite atomic so a
+                        // stale error never lingers alongside a success (and vice-versa).
+                        if (epoch.get() == myEpoch) {
+                            pendingError.set(null);
+                            pending.set(new Tagged<>(response, myEpoch));
+                        }
                         return;
                     } catch (Exception e) {
+                        currentClient = null;
                         String msg = e.getMessage() != null ? e.getMessage() : describeThrowable(e);
                         if (attemptErrors.length() > 0) attemptErrors.append(" | ");
                         attemptErrors.append("#").append(i + 1).append(" ")
@@ -75,8 +141,11 @@ public class LlmDispatcher {
                             + " model=" + backend.model, e);
                     }
                 }
-                pendingError.set(new RuntimeException(
-                    "All configured backends failed: " + attemptErrors.toString()));
+                if (epoch.get() == myEpoch) {
+                    pending.set(null);
+                    pendingError.set(new Tagged<>(new RuntimeException(
+                        "All configured backends failed: " + attemptErrors.toString()), myEpoch));
+                }
             }
         });
         t.setDaemon(true);
@@ -89,8 +158,9 @@ public class LlmDispatcher {
      * is in-flight. Safe to call on the game thread every frame.
      */
     public Optional<LLMResponse> poll() {
-        LLMResponse r = pending.getAndSet(null);
-        return Optional.ofNullable(r);
+        Tagged<LLMResponse> r = pending.getAndSet(null);
+        if (r == null || r.epoch != epoch.get()) return Optional.empty();
+        return Optional.of(r.value);
     }
 
     /**
@@ -98,8 +168,27 @@ public class LlmDispatcher {
      * {@link Optional#empty()} if no error has been recorded. Safe to call on the game thread.
      */
     public Optional<Exception> pollError() {
-        Exception e = pendingError.getAndSet(null);
-        return Optional.ofNullable(e);
+        Tagged<Exception> e = pendingError.getAndSet(null);
+        if (e == null || e.epoch != epoch.get()) return Optional.empty();
+        return Optional.of(e.value);
+    }
+
+    /**
+     * Cancel any in-flight LLM request (C-9). If the active client is a
+     * {@link ClaudeCliClient}, the subprocess is killed within ~1s.
+     * Safe to call from the game thread at any time.
+     */
+    public void cancel() {
+        // Bump the epoch so any in-flight request is superseded: its result/error/deltas will be
+        // discarded even for HTTP providers whose blocking send() cannot be interrupted (#7/#14).
+        epoch.incrementAndGet();
+        pending.set(null);
+        pendingError.set(null);
+        LLMClient c = currentClient;
+        if (c instanceof ClaudeCliClient) {
+            log.info("LlmDispatcher.cancel(): aborting ClaudeCliClient subprocess");
+            ((ClaudeCliClient) c).abort();
+        }
     }
 
     // ── Retry chain ───────────────────────────────────────────────────────
@@ -111,14 +200,6 @@ public class LlmDispatcher {
             return client.complete(request);
         } catch (Exception e) {
             if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterNoTools(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryMode", "same-model-no-tools");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_TOOLLESS", "LlmDispatcher.completeWithBackendRetry",
-                        "retry-without-tools", d.toString());
-                } catch (Throwable ignore) { }
                 log.warn("Starlogue: OpenRouter model does not support tool use; retrying once without tools");
                 LLMRequest retryNoTools = new LLMRequest(request.messages,
                     java.util.Collections.<Map<String, Object>>emptyList(),
@@ -126,14 +207,6 @@ public class LlmDispatcher {
                 return client.complete(retryNoTools);
             }
             if ("openrouter".equals(backend.provider) && shouldRetryOpenRouterError(e)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("model", request.model);
-                    d.put("retryModel", "openrouter/auto");
-                    d.put("error", e.getMessage() != null ? e.getMessage() : "");
-                    DebugSessionLog.log("H_OR_RETRY", "LlmDispatcher.completeWithBackendRetry",
-                        "retry-on-provider-error", d.toString());
-                } catch (Throwable ignore) { }
                 log.warn("Starlogue: OpenRouter provider error for model=" + request.model
                     + ", retrying once with openrouter/auto");
                 LLMRequest retry = new LLMRequest(request.messages, request.tools, "openrouter/auto",

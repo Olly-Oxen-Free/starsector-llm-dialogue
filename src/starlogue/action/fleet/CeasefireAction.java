@@ -59,7 +59,7 @@ public class CeasefireAction implements StarlogueAction {
         float days = 30f;
         Object daysObj = args.get("duration_days");
         if (daysObj instanceof Number) days = ((Number) daysObj).floatValue();
-        days = Math.min(days, MAX_DURATION);
+        days = Math.min(MAX_DURATION, Math.max(1f, days));
 
         if (ctx.fleet != null) {
             ctx.fleet.setNoEngaging(days);
