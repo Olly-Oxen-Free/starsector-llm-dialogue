@@ -32,15 +32,19 @@ class McpRpcHandler implements HttpHandler {
     private static final String CONTENT_TYPE         = "application/json";
     private static final int    HTTP_OK              = 200;
     private static final int    HTTP_NO_CONTENT      = 204;
+    private static final int    HTTP_UNAUTHORIZED    = 401;
     private static final int    HTTP_FORBIDDEN       = 403;
     private static final int    HTTP_BAD_REQ         = 400;
     private static final int    HTTP_NOT_ALLOWED     = 405;
 
     private final McpToolBridge bridge;
+    /** Per-session shared secret required in the {@link McpServer#AUTH_HEADER} header (#16). */
+    private final String authToken;
     private volatile McpToolSchema schema;
 
-    McpRpcHandler(McpToolBridge bridge) {
+    McpRpcHandler(McpToolBridge bridge, String authToken) {
         this.bridge = bridge;
+        this.authToken = authToken;
     }
 
     void setSchema(McpToolSchema schema) {
@@ -55,6 +59,20 @@ class McpRpcHandler implements HttpHandler {
             exchange.sendResponseHeaders(HTTP_FORBIDDEN, -1);
             exchange.close();
             return;
+        }
+
+        // Enforce the per-session shared secret (#16): loopback alone doesn't stop other local
+        // processes from invoking game actions while a dialog is open. Reject 401 if the header is
+        // absent or wrong. Constant-time compare to avoid a timing oracle on the token.
+        if (authToken != null && !authToken.isEmpty()) {
+            String presented = exchange.getRequestHeaders().getFirst(McpServer.AUTH_HEADER);
+            if (presented == null || !constantTimeEquals(authToken, presented)) {
+                log.warn("MCP: rejected request with missing/invalid auth token from "
+                    + remote.getAddress());
+                exchange.sendResponseHeaders(HTTP_UNAUTHORIZED, -1);
+                exchange.close();
+                return;
+            }
         }
 
         // Only accept POST
@@ -178,6 +196,17 @@ class McpRpcHandler implements HttpHandler {
     private boolean isLocalhost(InetSocketAddress addr) {
         var ia = addr.getAddress();
         return ia != null && ia.isLoopbackAddress();
+    }
+
+    /** Length-safe, constant-time string comparison for the auth token. */
+    private static boolean constantTimeEquals(String a, String b) {
+        byte[] ba = a.getBytes(StandardCharsets.UTF_8);
+        byte[] bb = b.getBytes(StandardCharsets.UTF_8);
+        int diff = ba.length ^ bb.length;
+        for (int i = 0; i < ba.length; i++) {
+            diff |= ba[i] ^ bb[i < bb.length ? i : 0];
+        }
+        return diff == 0;
     }
 
     private void sendJson(HttpExchange exchange, int status, JSONObject body) throws IOException {

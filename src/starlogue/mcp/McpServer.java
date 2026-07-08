@@ -5,6 +5,7 @@ import org.apache.log4j.Logger;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.security.SecureRandom;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,12 +33,35 @@ public class McpServer {
     private static final Logger log = Logger.getLogger(McpServer.class);
 
     private final McpRpcHandler handler;
+    private final String authToken;
     private HttpServer httpServer;
     private ExecutorService executor;
     private int port = -1;
 
     public McpServer(McpToolBridge bridge) {
-        this.handler = new McpRpcHandler(bridge);
+        this.authToken = generateAuthToken();
+        this.handler = new McpRpcHandler(bridge, authToken);
+    }
+
+    /** HTTP header name carrying the per-session shared secret (#16). */
+    public static final String AUTH_HEADER = "X-Starlogue-Token";
+
+    /** Generate a per-session 256-bit random token, hex-encoded. */
+    private static String generateAuthToken() {
+        byte[] buf = new byte[32];
+        new SecureRandom().nextBytes(buf);
+        StringBuilder sb = new StringBuilder(buf.length * 2);
+        for (byte b : buf) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    /**
+     * The per-session shared secret the CLI must present in the {@link #AUTH_HEADER} header (#16).
+     * Written into the MCP config file so only our spawned CLI knows it; any other local process
+     * that probes the loopback port is rejected with 401.
+     */
+    public String getAuthToken() {
+        return authToken;
     }
 
     /**

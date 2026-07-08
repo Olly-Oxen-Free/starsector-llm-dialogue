@@ -82,8 +82,8 @@ public class ClaudeCliClient implements LLMClient {
         Thread stderrDrainer = null;
 
         try {
-            // 1. Write MCP config temp file
-            tmpConfig = McpConfigWriter.write(mcpServer.getPort());
+            // 1. Write MCP config temp file (includes per-session auth token, #16)
+            tmpConfig = McpConfigWriter.write(mcpServer.getPort(), mcpServer.getAuthToken());
 
             // 2. Build prompt from request messages
             String userPrompt    = buildUserPrompt(request);
@@ -204,7 +204,12 @@ public class ClaudeCliClient implements LLMClient {
      * @throws RuntimeException      for other fatal result errors
      */
     private String parseStream(Process process) throws Exception {
+        // `assembled` tracks the streamed assistant text (what the UI sees via deltas).
+        // `finalResultText` holds the authoritative text harvested from the terminal `result`
+        // event, when present. The result text — not the accumulated stream — is returned as the
+        // response, so a CLI that emits cumulative snapshots can't double the reply (#15).
         StringBuilder assembled = new StringBuilder();
+        String finalResultText = null;
         boolean resultSeen = false;
 
         try (BufferedReader reader = new BufferedReader(
@@ -229,11 +234,25 @@ public class ClaudeCliClient implements LLMClient {
                         break;
 
                     case "assistant": {
-                        // Extract text from content blocks
-                        String delta = extractAssistantText(ev);
-                        if (delta != null && !delta.isEmpty()) {
-                            assembled.append(delta);
-                            try { partialTextListener.accept(delta); } catch (Throwable ignored) {}
+                        // Extract full text of this event's content blocks.
+                        String eventText = extractAssistantText(ev);
+                        if (eventText != null && !eventText.isEmpty()) {
+                            // Detect cumulative snapshots: if this event's text starts with
+                            // everything we've accumulated, the CLI re-sent the whole message so
+                            // far. Emit only the new suffix as the delta and replace `assembled`
+                            // rather than appending (which would double the text) (#15).
+                            String delta;
+                            if (assembled.length() > 0 && eventText.startsWith(assembled.toString())) {
+                                delta = eventText.substring(assembled.length());
+                                assembled.setLength(0);
+                                assembled.append(eventText);
+                            } else {
+                                delta = eventText;
+                                assembled.append(eventText);
+                            }
+                            if (!delta.isEmpty()) {
+                                try { partialTextListener.accept(delta); } catch (Throwable ignored) {}
+                            }
                         }
                         break;
                     }
@@ -250,7 +269,7 @@ public class ClaudeCliClient implements LLMClient {
 
                     case "result":
                         resultSeen = true;
-                        handleResultEvent(ev, assembled);
+                        finalResultText = handleResultEvent(ev, assembled.toString());
                         break;
 
                     default:
@@ -264,7 +283,11 @@ public class ClaudeCliClient implements LLMClient {
             log.warn("ClaudeCliClient: stdout closed without a result event");
         }
 
-        return assembled.toString();
+        // Authoritative result text wins; fall back to the accumulated stream if the result
+        // event carried none.
+        return (finalResultText != null && !finalResultText.isEmpty())
+            ? finalResultText
+            : assembled.toString();
     }
 
     /**
@@ -306,20 +329,21 @@ public class ClaudeCliClient implements LLMClient {
      *   <li>If {@code is_error: true} and result contains "Not logged in" → {@link AuthFailedException}</li>
      *   <li>If {@code is_error: true} and result contains "rate" → {@link RateLimitedException}</li>
      *   <li>If {@code is_error: true} → generic RuntimeException</li>
-     *   <li>If {@code is_error: false} → optionally harvest final result text if assembled is empty</li>
+     *   <li>If {@code is_error: false} → return the authoritative final result text (or null)</li>
      * </ul>
+     *
+     * @param assembledText the text streamed so far (used only as a fallback / for diagnostics)
+     * @return the authoritative result text from the {@code result} field, or {@code null} if the
+     *         event carried none (caller falls back to the accumulated stream)
      */
-    private static void handleResultEvent(JSONObject ev, StringBuilder assembled) {
+    private static String handleResultEvent(JSONObject ev, String assembledText) {
         boolean isError = ev.optBoolean("is_error", false);
         if (!isError) {
-            // On success: if we have no assembled text yet, try harvesting from result field
-            if (assembled.length() == 0) {
-                String resultText = ev.optString("result", "");
-                if (!resultText.isEmpty()) {
-                    assembled.append(resultText);
-                }
-            }
-            return;
+            // On success: the `result` field is the authoritative final text. Returning it (rather
+            // than appending to the stream) prevents duplication when the CLI already streamed the
+            // same text via assistant events (#15).
+            String resultText = ev.optString("result", "");
+            return resultText.isEmpty() ? null : resultText;
         }
 
         // Error path

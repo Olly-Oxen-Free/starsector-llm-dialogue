@@ -19,6 +19,8 @@ public class TestRunner {
         "starlogue.MemoryEngineTest",
         "starlogue.PersonalityComposerTest",
         "starlogue.ActionMathTest",
+        "starlogue.LlmDispatcherTest",
+        "starlogue.McpToolBridgeTest",
     };
 
     public static void main(String[] args) throws Exception {

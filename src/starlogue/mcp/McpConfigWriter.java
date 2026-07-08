@@ -27,13 +27,15 @@ public class McpConfigWriter {
     private McpConfigWriter() {}
 
     /**
-     * Write a temp MCP config file pointing at the given MCP server port.
+     * Write a temp MCP config file pointing at the given MCP server port, including the
+     * per-session shared secret as an HTTP header (#16).
      *
-     * @param port the port returned by {@link McpServer#getPort()}
+     * @param port      the port returned by {@link McpServer#getPort()}
+     * @param authToken the per-session token from {@link McpServer#getAuthToken()}; may be null/empty
      * @return path to the temp file; caller is responsible for deletion
      * @throws IOException if the file cannot be created
      */
-    public static Path write(int port) throws IOException {
+    public static Path write(int port, String authToken) throws IOException {
         Path tmp = Files.createTempFile("starlogue-mcp-", ".json");
         // Best-effort: restrict to owner-read/write only (POSIX systems)
         try {
@@ -45,10 +47,23 @@ public class McpConfigWriter {
             log.debug("McpConfigWriter: could not set POSIX permissions on temp file: " + t.getMessage());
         }
 
-        String json = "{\"mcpServers\":{\"starlogue\":{\"type\":\"http\","
-            + "\"url\":\"http://127.0.0.1:" + port + "/mcp\"}}}";
-        Files.writeString(tmp, json);
-        log.debug("McpConfigWriter: wrote config to " + tmp + " (port=" + port + ")");
+        StringBuilder json = new StringBuilder();
+        json.append("{\"mcpServers\":{\"starlogue\":{\"type\":\"http\",")
+            .append("\"url\":\"http://127.0.0.1:").append(port).append("/mcp\"");
+        if (authToken != null && !authToken.isEmpty()) {
+            json.append(",\"headers\":{\"").append(McpServer.AUTH_HEADER).append("\":\"")
+                .append(authToken).append("\"}");
+        }
+        json.append("}}}");
+        Files.writeString(tmp, json.toString());
+        log.debug("McpConfigWriter: wrote config to " + tmp + " (port=" + port + ", auth="
+            + (authToken != null && !authToken.isEmpty() ? "yes" : "no") + ")");
         return tmp;
+    }
+
+    /** @deprecated use {@link #write(int, String)} — retained for callers without a token. */
+    @Deprecated
+    public static Path write(int port) throws IOException {
+        return write(port, null);
     }
 }

@@ -50,6 +50,17 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
     private enum State { IDLE, WAITING, ERROR }
     private State state = State.IDLE;
     private float waitTimer = 0f;
+    /**
+     * Effective UI-side timeout in seconds (#8). Derived per-request from the active backend so the
+     * dialog never abandons a request the backend is still legitimately serving. For claude_cli this
+     * is {@code timeoutSec + margin} (configurable up to 300s); for HTTP providers it tracks the
+     * HTTP client's per-request timeout + margin. Recomputed in {@link #sendToLLMImpl}.
+     */
+    private float uiTimeoutSec = HTTP_REQUEST_TIMEOUT_SEC + UI_TIMEOUT_MARGIN_SEC;
+    /** Per-request HTTP timeout hardcoded in OpenAIClient/AnthropicClient (see their {@code .timeout(...)}). */
+    private static final float HTTP_REQUEST_TIMEOUT_SEC = 60f;
+    /** Grace margin added on top of the backend's own timeout before the UI gives up. */
+    private static final float UI_TIMEOUT_MARGIN_SEC = 10f;
     private final LlmDispatcher dispatcher = new LlmDispatcher();
     /**
      * Active LLM session — non-null when a session is open. For non-CLI providers this
@@ -315,8 +326,19 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
                 mcpBridge.drainOnGameThread(ctx);
 
                 // Render any narrative notes from MCP tool executions
+                boolean noteAppended = false;
                 for (String note : mcpBridge.drainNarrativeNotes()) {
                     text.addParagraph("[" + note + "]");
+                    noteAppended = true;
+                }
+                // #12: A note just became the last paragraph. The WAITING streaming block below
+                // calls replaceLastParagraph(...) which would erase the note. Re-anchor the stream
+                // on a fresh paragraph and reset the partial accumulator so continued streaming
+                // renders below the note instead of clobbering it.
+                if (noteAppended && state == State.WAITING && !inputFieldIsLatest) {
+                    text.addParagraph("");
+                    partialTextAccum.set(null);
+                    partialTextRendered.set(false);
                 }
 
                 // Check if any MCP tool triggered a dialog handoff
@@ -414,8 +436,10 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             return;
         }
 
-        if (waitTimer > 30f) {
-            log.warn("Starlogue: LLM timeout — cancelling background dispatch to avoid stale response");
+        if (waitTimer > uiTimeoutSec) {
+            int boundSec = (int) uiTimeoutSec;
+            log.warn("Starlogue: LLM timeout after " + boundSec
+                + "s — cancelling background dispatch to avoid stale response");
             // Cancel the in-flight dispatch so an orphaned response can't surface as the
             // answer to the player's next message. Mirrors the End-button abort path above.
             dispatcher.cancel();
@@ -427,8 +451,9 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
             pendingUserMessage = null;
             partialTextAccum.set(null);
             partialTextRendered.set(false);
-            ConversationAuditLog.logToolCall(conversationId, "", null, "llm_timeout", "30s timeout");
-            reportError("LLM call timed out after 30s. Check that your endpoint/model is reachable.");
+            ConversationAuditLog.logToolCall(conversationId, "", null, "llm_timeout", boundSec + "s timeout");
+            reportError("LLM call timed out after " + boundSec
+                + "s. Check that your endpoint/model is reachable.");
         }
     }
 
@@ -535,6 +560,9 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
 
         state = State.WAITING;
         waitTimer = 0f;
+        // Derive the UI timeout from the effective backend so we don't kill a request the backend
+        // is still serving (#8). claude_cli can be configured up to 300s.
+        uiTimeoutSec = computeUiTimeoutSec(cfg);
         // Reset partial-text accumulator for this new request (C-7)
         partialTextAccum.set(null);
         partialTextRendered.set(false);
@@ -599,6 +627,19 @@ public class StarlogueDialogPlugin implements InteractionDialogPlugin {
         } else {
             dispatcher.dispatch(baseRequest, backends, starlogue.llm.ProviderFactory.INSTANCE);
         }
+    }
+
+    /**
+     * Compute the UI-side timeout (seconds) for the active backend (#8). claude_cli honours its
+     * configurable {@code timeoutSec} (default 60s, up to 300s) plus a margin; HTTP providers use
+     * the HTTP client's per-request timeout plus a margin.
+     */
+    private float computeUiTimeoutSec(LlmBackendConfig.Snapshot cfg) {
+        if (cfg != null && "claude_cli".equals(cfg.provider)) {
+            int t = (cfg.claudeCli != null) ? cfg.claudeCli.timeoutSec : 60;
+            return t + UI_TIMEOUT_MARGIN_SEC;
+        }
+        return HTTP_REQUEST_TIMEOUT_SEC + UI_TIMEOUT_MARGIN_SEC;
     }
 
     private void displayResponse(LLMResponse response) {
